@@ -43,6 +43,7 @@ if [ "$DO_CRON" = "true" ]; then
             --schedule="${CRON_SCHEDULE}" \
             --uri="${FUNCTION_URL}" \
             --http-method=GET \
+            --time-zone=America/Los_Angeles \
             --oidc-service-account-email="${SA_EMAIL}"
     else
         gcloud scheduler jobs create http "${SCHEDULER_JOB_NAME}" \
@@ -50,6 +51,7 @@ if [ "$DO_CRON" = "true" ]; then
             --schedule="${CRON_SCHEDULE}" \
             --uri="${FUNCTION_URL}" \
             --http-method=GET \
+            --time-zone=America/Los_Angeles \
             --oidc-service-account-email="${SA_EMAIL}"
     fi
 fi
