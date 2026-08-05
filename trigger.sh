@@ -28,7 +28,7 @@ echo "Invoking: ${FUNCTION_URL}"
 echo "----------------------------------------------------"
 
 # Obtain identity token and trigger HTTP function
-RESPONSE=$(curl -s -X POST "${FUNCTION_URL}" \
+RESPONSE=$(curl -s -X GET "${FUNCTION_URL}" \
         -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
         -H "Content-Type: application/json" \
     )
