@@ -218,6 +218,31 @@ def delete_service_networking_connection(clean_path: str) -> str:
     return f"Initiated Service Networking Connection deletion for {consumer_network} (Operation: {operation.get('name')})"
 
 
+def delete_kms_key_version(clean_path: str) -> str:
+    """
+    Schedules destruction for a Cloud KMS CryptoKeyVersion.
+    clean_path format: projects/{project}/locations/{location}/keyRings/{ring}/cryptoKeys/{key}/cryptoKeyVersions/{version}
+    """
+    from google.cloud import kms_v1  # Lazy import
+
+    client = kms_v1.KeyManagementServiceClient()
+
+    # Retrieve status first to ensure idempotency
+    version = client.get_crypto_key_version(name=clean_path)
+    state_name = kms_v1.CryptoKeyVersion.CryptoKeyVersionState(version.state).name
+
+    if version.state in (
+        kms_v1.CryptoKeyVersion.CryptoKeyVersionState.DESTROYED,
+        kms_v1.CryptoKeyVersion.CryptoKeyVersionState.DESTROY_SCHEDULED,
+    ):
+        return f"Skipped KMS CryptoKeyVersion ({clean_path}): Already in state {state_name}"
+
+    response = client.destroy_crypto_key_version(request={"name": clean_path})
+    new_state = kms_v1.CryptoKeyVersion.CryptoKeyVersionState(response.state).name
+
+    return f"Scheduled destruction for KMS CryptoKeyVersion: {clean_path} (New State: {new_state})"
+
+
 # --- Execution Router ---
 def execute_deletion(asset_type: str, full_name: str) -> str:
     parsed = parse_gcp_path(full_name)
@@ -229,17 +254,16 @@ def execute_deletion(asset_type: str, full_name: str) -> str:
     try:
         if asset_type.startswith("alloydb.googleapis.com"):
             return delete_alloydb_resource(asset_type, clean_path)
-
         elif asset_type.startswith("aiplatform.googleapis.com"):
             return delete_vertex_resource(asset_type, clean_path)
-
         elif asset_type.startswith("compute.googleapis.com"):
             return delete_compute_resource(
                 asset_type, clean_path, project, location, resource_id
             )
-
         elif asset_type == "servicenetworking.googleapis.com/Connection":
             return delete_service_networking_connection(clean_path)
+        elif asset_type == "cloudkms.googleapis.com/CryptoKeyVersion":
+            return delete_kms_key_version(clean_path)
 
         return f"Unhandled asset type: {asset_type}"
 

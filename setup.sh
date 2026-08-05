@@ -36,6 +36,7 @@ ROLES=(
     "roles/compute.networkAdmin"            # Delete IP addresses, peerings, and networks
     "roles/run.invoker"                     # Allow Scheduler to invoke Gen2 Cloud Function
     "roles/servicenetworking.networksAdmin" # Disconnect service networking connections
+    "roles/cloudkms.admin"                  # Destroy key versions
 )
 
 echo "Binding IAM roles to ${SA_EMAIL}..."
