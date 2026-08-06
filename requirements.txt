@@ -1,7 +1,6 @@
 functions-framework==3.*
-google-cloud-asset>=3.0.0
-google-cloud-alloydb>=0.11.0
-google-cloud-aiplatform>=1.30.0
-google-cloud-compute>=1.10.0
-google-api-python-client>=2.100.0
-google-cloud-kms>=3.0.0
+google-cloud-compute==1.*
+google-cloud-alloydb==0.*
+google-cloud-build==3.*
+google-cloud-developerconnect==0.*
+google-cloud-aiplatform==1.*
