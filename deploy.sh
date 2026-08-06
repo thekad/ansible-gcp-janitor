@@ -19,6 +19,7 @@ gcloud functions deploy "${FUNCTION_NAME}" \
     --runtime=python314 \
     --region="${REGION}" \
     --memory=512Mi \
+    --timeout=540 \
     --entry-point=scan_and_clean_resources \
     --trigger-http \
     --no-allow-unauthenticated \
