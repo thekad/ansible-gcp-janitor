@@ -33,11 +33,12 @@ ROLES=(
     "roles/aiplatform.admin"                # Delete Vertex AI models, runtimes, & endpoints
     "roles/alloydb.admin"                   # Delete AlloyDB instances & clusters
     "roles/cloudasset.viewer"               # Search project assets
+    "roles/cloudbuild.admin"                # Destroy cloudbuild triggers
+    "roles/cloudkms.admin"                  # Destroy key versions
     "roles/compute.admin"                   # Delete instances, disks, firewall rules, addresses, and networks
     "roles/compute.networkAdmin"            # Delete IP addresses, peerings, and networks
     "roles/run.invoker"                     # Allow Scheduler to invoke Gen2 Cloud Function
     "roles/servicenetworking.networksAdmin" # Disconnect service networking connections
-    "roles/cloudkms.admin"                  # Destroy key versions
 )
 
 echo "Binding IAM roles to ${SA_EMAIL}..."
