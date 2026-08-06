@@ -27,8 +27,8 @@ python3 -m venv .venv
 
 # Verify all imports resolve
 .venv/bin/python -c "
-from google.cloud import compute_v1, alloydb_v1, aiplatform_v1, developerconnect_v1
-from google.cloud.devtools import cloudbuild_v1
+from google.cloud import compute_v1, alloydb_v1, aiplatform_v1
+from google.cloud.devtools import cloudbuild_v1, cloudbuild_v2
 import functions_framework
 print('imports OK')
 "
@@ -51,14 +51,21 @@ Always re-run `.venv/bin/pip install -r requirements.txt` after pulling changes 
 ## `main.py` structure
 
 ```
-match_prefix(name, prefix)          # Strips resource path, checks prefix
-handle_compute(...)                 # Compute Engine resources
-handle_alloydb(...)                 # AlloyDB clusters, instances, users, backups
-handle_cloudbuild(...)              # Cloud Build triggers
-handle_cloudbuildv2(...)            # Developer Connect connections and repos
-handle_colab(...)                   # Colab/Notebook schedules, runtimes, templates
-handle_vertexai(...)                # Vertex AI endpoints, indexes, datasets, etc.
-scan_and_clean_resources(request)   # HTTP entrypoint — orchestrates all handlers
+match_prefix(name: str, prefix: str) -> bool                                          # Strips resource path, checks prefix
+handle_compute(project, region, prefix, do_cleanup) -> HandlerResult                  # Compute Engine resources
+handle_alloydb(project, region, prefix, do_cleanup) -> HandlerResult                  # AlloyDB clusters, instances, users, backups
+handle_cloudbuild(project, prefix, do_cleanup) -> HandlerResult                       # Cloud Build triggers
+handle_cloudbuildv2(project, region, prefix, do_cleanup) -> HandlerResult             # Cloud Build v2 connections and repositories
+handle_colab(project, region, prefix, do_cleanup) -> HandlerResult                   # Colab/Notebook schedules, runtimes, templates
+handle_vertexai(project, region, prefix, do_cleanup) -> HandlerResult                 # Vertex AI endpoints, indexes, datasets, etc.
+scan_and_clean_resources(request: Request) -> tuple[str, int] | tuple[str, int, dict] # HTTP entrypoint — orchestrates all handlers
+```
+
+`HandlerResult` is a `TypedDict` defined at the top of `main.py`:
+```python
+class HandlerResult(TypedDict):
+    found: list[dict[str, str]]
+    actions: list[str]
 ```
 
 ## Deletion order (must be preserved)
@@ -99,15 +106,23 @@ be undeployed from the endpoint before the endpoint itself can be deleted.
 1. If it belongs to an existing domain handler, add it inside that function in
    the correct position relative to its dependencies.
 2. If it is a new domain, add a new `handle_<domain>(...)` function following the
-   same `(project, region, prefix, do_cleanup) -> {"found": [...], "actions": [...]}`
-   signature, then insert it into the `scanners` list **before `compute`** unless
-   it has no VPC dependency.
+   same typed signature and return type:
+   ```python
+   def handle_<domain>(project: str, region: str, prefix: str, do_cleanup: bool) -> HandlerResult:
+   ```
+   Then insert it into the `scanners` list **before `compute`** unless it has no
+   VPC dependency.
 3. Use lazy imports inside the handler (`from google.cloud import ...`) — do not
    add top-level imports.
 4. Add the corresponding package to `requirements.txt` pinned to a major version
    (`==N.*`).
 5. If the new domain uses a VPC or PSA peering, it **must** appear before
    `compute` in the scanners list.
+6. All functions must carry complete type hints — parameters and return type.
+   Use `HandlerResult` for domain handlers. For inner helper functions, annotate
+   `client_cls: type` and include an explicit `-> None` if the function has no
+   return value. Never use bare `dict` or `list` as a return type where a more
+   precise type is available.
 
 ## Configuration reference
 

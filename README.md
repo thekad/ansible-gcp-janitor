@@ -19,7 +19,7 @@ clusters hold VPC peerings that would block network deletion):
 
 1. **AlloyDB** — Backups → Instances → Users → Clusters
 2. **Cloud Build** — Build Triggers
-3. **Cloud Build v2 / Developer Connect** — Git Repository Links → Connections
+3. **Cloud Build v2** — Repositories → Connections
 4. **Colab / Vertex AI Notebooks** — Schedules → Execution Jobs → Runtimes → Runtime Templates
 5. **Vertex AI** — Endpoints (models undeployed first) → Datasets → Deployment Resource Pools → Index Endpoints (indexes undeployed first) → Indexes → Metadata Stores → Reasoning Engines → Tensorboards → Featurestores → Feature Online Stores → Feature Groups
 6. **Compute** — Instances → Disks → Firewall Rules → Subnetworks → Addresses (regional + global) → VPC Peerings → Networks
