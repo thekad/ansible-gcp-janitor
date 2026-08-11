@@ -350,6 +350,28 @@ def handle_vertexai(
     parent = f"projects/{project}/locations/{region}"
     found, actions = [], []
 
+    # Some Vertex AI resources (Featurestore, FeatureOnlineStore, FeatureGroup)
+    # require snake_case IDs — hyphens are not allowed. Ansible converts the
+    # prefix to underscores when naming those resources, so we match both forms.
+    vertex_prefix = prefix.replace("-", "_")
+
+    def vertex_match(name: str, disp: str) -> bool:
+        return (
+            match_prefix(name, prefix)
+            or match_prefix(disp, prefix)
+            or match_prefix(name, vertex_prefix)
+            or match_prefix(disp, vertex_prefix)
+        )
+
+    # Terminal job states that do not require cancellation before deletion
+    _TERMINAL_JOB_STATES = {
+        aiplatform_v1.JobState.JOB_STATE_SUCCEEDED,
+        aiplatform_v1.JobState.JOB_STATE_FAILED,
+        aiplatform_v1.JobState.JOB_STATE_CANCELLED,
+        aiplatform_v1.JobState.JOB_STATE_PAUSED,
+        aiplatform_v1.JobState.JOB_STATE_EXPIRED,
+    }
+
     # Helper scanner macro
     def scan_and_delete(
         client_cls: type,
@@ -357,24 +379,61 @@ def handle_vertexai(
         delete_method: str,
         asset_type: str,
     ) -> None:
-        client = client_cls(client_options=opts)
         try:
+            client = client_cls(client_options=opts)
             for item in getattr(client, list_method)(parent=parent):
                 name = getattr(item, "name", "")
                 disp = getattr(item, "display_name", "")
-                if match_prefix(name, prefix) or match_prefix(disp, prefix):
+                if vertex_match(name, disp):
                     found.append({"type": f"vertexai.{asset_type}", "name": name})
                     if do_cleanup:
                         getattr(client, delete_method)(name=name).result()
                         actions.append(f"Deleted Vertex AI {asset_type}: {name}")
         except Exception as e:
-            logging.warning(f"Vertex AI {asset_type} scan failed: {e}")
+            msg = f"Vertex AI {asset_type} scan failed: {e}"
+            logging.warning(msg)
+            actions.append(f"[WARN] {msg}")
+
+    def cancel_and_delete_jobs(
+        client_cls: type,
+        list_method: str,
+        cancel_method: str,
+        delete_method: str,
+        asset_type: str,
+    ) -> None:
+        try:
+            client = client_cls(client_options=opts)
+            for item in getattr(client, list_method)(parent=parent):
+                name = getattr(item, "name", "")
+                disp = getattr(item, "display_name", "")
+                if not vertex_match(name, disp):
+                    continue
+                found.append({"type": f"vertexai.{asset_type}", "name": name})
+                if do_cleanup:
+                    if getattr(item, "state", None) not in _TERMINAL_JOB_STATES:
+                        try:
+                            getattr(client, cancel_method)(name=name)
+                        except Exception as ce:
+                            logging.warning(
+                                f"Could not cancel Vertex AI {asset_type} {name}: {ce}"
+                            )
+                    try:
+                        getattr(client, delete_method)(name=name).result()
+                        actions.append(f"Deleted Vertex AI {asset_type}: {name}")
+                    except Exception as de:
+                        logging.warning(
+                            f"Could not delete Vertex AI {asset_type} {name}: {de}"
+                        )
+        except Exception as e:
+            msg = f"Vertex AI {asset_type} scan failed: {e}"
+            logging.warning(msg)
+            actions.append(f"[WARN] {msg}")
 
     # Endpoints (Undeploys models before deletion)
     try:
         ep_client = aiplatform_v1.EndpointServiceClient(client_options=opts)
         for ep in ep_client.list_endpoints(parent=parent):
-            if match_prefix(ep.name, prefix) or match_prefix(ep.display_name, prefix):
+            if vertex_match(ep.name, ep.display_name):
                 found.append({"type": "vertexai.Endpoint", "name": ep.name})
                 if do_cleanup:
                     if ep.deployed_models:
@@ -387,7 +446,51 @@ def handle_vertexai(
                     ep_client.delete_endpoint(name=ep.name).result()
                     actions.append(f"Deleted Vertex AI Endpoint: {ep.name}")
     except Exception as e:
-        logging.warning(f"Vertex AI Endpoint scan failed: {e}")
+        msg = f"Vertex AI Endpoint scan failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
+
+    # Models (must come after Endpoints so deployed-model references are already removed)
+    scan_and_delete(
+        aiplatform_v1.ModelServiceClient, "list_models", "delete_model", "Model"
+    )
+
+    # Jobs — cancel if non-terminal, then delete
+    cancel_and_delete_jobs(
+        aiplatform_v1.PipelineServiceClient,
+        "list_pipeline_jobs",
+        "cancel_pipeline_job",
+        "delete_pipeline_job",
+        "PipelineJob",
+    )
+    cancel_and_delete_jobs(
+        aiplatform_v1.PipelineServiceClient,
+        "list_training_pipelines",
+        "cancel_training_pipeline",
+        "delete_training_pipeline",
+        "TrainingPipeline",
+    )
+    cancel_and_delete_jobs(
+        aiplatform_v1.JobServiceClient,
+        "list_batch_prediction_jobs",
+        "cancel_batch_prediction_job",
+        "delete_batch_prediction_job",
+        "BatchPredictionJob",
+    )
+    cancel_and_delete_jobs(
+        aiplatform_v1.JobServiceClient,
+        "list_custom_jobs",
+        "cancel_custom_job",
+        "delete_custom_job",
+        "CustomJob",
+    )
+    cancel_and_delete_jobs(
+        aiplatform_v1.JobServiceClient,
+        "list_hyperparameter_tuning_jobs",
+        "cancel_hyperparameter_tuning_job",
+        "delete_hyperparameter_tuning_job",
+        "HyperparameterTuningJob",
+    )
 
     # Generic Vertex AI Resources
     scan_and_delete(
@@ -404,7 +507,7 @@ def handle_vertexai(
     try:
         ie_client = aiplatform_v1.IndexEndpointServiceClient(client_options=opts)
         for ie in ie_client.list_index_endpoints(parent=parent):
-            if match_prefix(ie.name, prefix) or match_prefix(ie.display_name, prefix):
+            if vertex_match(ie.name, ie.display_name):
                 found.append({"type": "vertexai.IndexEndpoint", "name": ie.name})
                 if do_cleanup:
                     for di in ie.deployed_indexes or []:
@@ -416,7 +519,9 @@ def handle_vertexai(
                     ie_client.delete_index_endpoint(name=ie.name).result()
                     actions.append(f"Deleted Vertex AI IndexEndpoint: {ie.name}")
     except Exception as e:
-        logging.warning(f"Vertex AI IndexEndpoint scan failed: {e}")
+        msg = f"Vertex AI IndexEndpoint scan failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
 
     scan_and_delete(
         aiplatform_v1.IndexServiceClient, "list_indexes", "delete_index", "Index"
