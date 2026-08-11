@@ -7,11 +7,11 @@ FUNCTION_NAME="ansible-janitor"
 SA_NAME="janitor-bot"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 SCHEDULER_JOB_NAME="daily-ansible-janitor"
-DO_CRON="${CRON:-'false'}"
+DO_CRON="${DO_CRON:-'false'}"
 CRON_SCHEDULE="0 2 * * *"  # Runs daily at 2:00 AM
 
 # Toggle dry-run mode ("false") vs active destruction ("true") defaults to false
-DO_CLEANUP="${CLEANUP:-'false'}"
+DO_CLEANUP="${DO_CLEANUP:-'false'}"
 
 echo "Deploying Cloud Function (2nd Gen)..."
 gcloud functions deploy "${FUNCTION_NAME}" \
