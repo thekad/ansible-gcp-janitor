@@ -45,11 +45,10 @@ IAM roles granted to the service account:
 |---|---|
 | `roles/aiplatform.admin` | Delete Vertex AI and Colab resources |
 | `roles/alloydb.admin` | Delete AlloyDB clusters and instances |
-| `roles/cloudasset.viewer` | Enumerate project assets |
-| `roles/compute.networkAdmin` | Delete instances, disks, networks, addresses |
+| `roles/cloudbuild.admin` | Destroy Cloud Build triggers |
+| `roles/compute.admin` | Delete instances, disks, firewall rules, addresses, and networks |
 | `roles/run.invoker` | Allow Cloud Scheduler to invoke the function |
 | `roles/servicenetworking.networksAdmin` | Remove PSA/service networking peerings |
-| `roles/cloudkms.admin` | Destroy KMS key versions |
 
 ## Deployment
 
@@ -58,11 +57,11 @@ IAM roles granted to the service account:
 ./deploy.sh
 
 # Cleanup mode — actively deletes matched resources
-CLEANUP=true ./deploy.sh
+DO_CLEANUP=true ./deploy.sh
 
 # Also create/update the daily Cloud Scheduler job (runs at 02:00 America/Los_Angeles)
-CRON=true ./deploy.sh
-CRON=true CLEANUP=true ./deploy.sh
+DO_CRON=true ./deploy.sh
+DO_CRON=true DO_CLEANUP=true ./deploy.sh
 ```
 
 The function is deployed as `ansible-janitor` in `us-central1` with a 9-minute

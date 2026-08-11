@@ -174,7 +174,7 @@ subnetworks and their deletion must complete before subnet deletion is attempted
 ./deploy.sh
 
 # Deploy in cleanup mode + create scheduler job
-CLEANUP=true CRON=true ./deploy.sh
+DO_CLEANUP=true DO_CRON=true ./deploy.sh
 ```
 
 The scheduler job runs daily at 02:00 America/Los_Angeles (`0 2 * * *`).
