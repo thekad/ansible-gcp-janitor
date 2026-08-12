@@ -119,6 +119,22 @@ curl -s "${FUNCTION_URL}?prefix=my-test-" \
 In cleanup mode `actions_taken` contains one entry per completed deletion or
 peering removal.
 
+## Logging
+
+You can check the latest cloudrun function logs with:
+
+```bash
+./cloudrun-logs.sh [since]
+```
+
+Where `since` defaults to "1 day ago"
+
+Or you can check the latest schedule logs with:
+
+```bash
+./schedule-logs.sh [since]
+```
+
 ## Known gaps
 
 The following resource types are not yet handled and may need manual cleanup:
