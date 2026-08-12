@@ -89,13 +89,26 @@ def handle_compute(
                 actions.append(f"Deleted Compute Firewall: {fw.name}")
 
     # 4. Subnetworks (regional; must go before networks)
+    # Build a set of network selfLinks whose subnets were auto-created so we
+    # can skip them — GCP refuses to delete auto-created subnets individually.
     subnet_client = compute_v1.SubnetworksClient()
+    _net_pre = compute_v1.NetworksClient()
+    auto_subnet_networks = {
+        net.self_link
+        for net in _net_pre.list(project=project)
+        if net.auto_create_subnetworks
+    }
     for zone_str, response in subnet_client.aggregated_list(project=project):
         if response.subnetworks:
             subnet_region = zone_str.split("/")[-1]
             if subnet_region == region:
                 for subnet in response.subnetworks:
                     if match_prefix(subnet.name, prefix):
+                        if subnet.network in auto_subnet_networks:
+                            logging.info(
+                                f"Skipping auto-created subnetwork: {subnet.name}"
+                            )
+                            continue
                         found.append(
                             {
                                 "type": "compute.Subnetwork",
