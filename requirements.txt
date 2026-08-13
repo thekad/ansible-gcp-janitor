@@ -3,3 +3,4 @@ google-cloud-compute==1.*
 google-cloud-alloydb==0.*
 google-cloud-build==3.*
 google-cloud-aiplatform==1.*
+google-api-python-client==2.*

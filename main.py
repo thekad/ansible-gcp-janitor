@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, TypedDict
 
 import functions_framework
@@ -34,6 +35,7 @@ def handle_compute(
     project: str, region: str, prefix: str, do_cleanup: bool
 ) -> HandlerResult:
     from google.cloud import compute_v1
+    from googleapiclient.discovery import build
 
     found, actions = [], []
 
@@ -124,7 +126,89 @@ def handle_compute(
                             ).result()
                             actions.append(f"Deleted Compute Subnetwork: {subnet.name}")
 
-    # 5. Static/External IP Addresses (must go before networks)
+    # 5. Service Networking Connections (must go before addresses & networks —
+    # the allocated PEERING ranges backing these connections, e.g. those
+    # created via `gcloud services vpc-peerings connect`, cannot be deleted
+    # while the connection is still active, and the connection itself is a
+    # peering that blocks network deletion).
+    matched_networks = [
+        net.name
+        for net in _net_pre.list(project=project)
+        if match_prefix(net.name, prefix)
+    ]
+    # Networks whose Service Networking connection cleanup failed — deleting
+    # the network anyway would orphan the producer-side connection and any
+    # managed services (e.g. AlloyDB) still using it.
+    networks_with_failed_connections: set[str] = set()
+    if matched_networks:
+        # The Service Networking API requires the consumer network to be
+        # addressed by numeric project number, not project ID — passing the
+        # project ID causes a misleading 404 "Producer tenant project not
+        # found" error.
+        project_number = compute_v1.ProjectsClient().get(project=project).id
+        service_networking = build("servicenetworking", "v1", cache_discovery=False)
+        for net_name in matched_networks:
+            consumer_network = f"projects/{project_number}/global/networks/{net_name}"
+            try:
+                response = (
+                    service_networking.services()
+                    .connections()
+                    .list(
+                        parent="services/servicenetworking.googleapis.com",
+                        network=consumer_network,
+                    )
+                    .execute()
+                )
+            except Exception as e:
+                msg = (
+                    f"Could not list Service Networking connections for {net_name}: {e}"
+                )
+                logging.warning(msg)
+                actions.append(f"[WARN] {msg}")
+                continue
+            for conn in response.get("connections", []):
+                peering_name = conn.get("peering", "")
+                found.append(
+                    {
+                        "type": "servicenetworking.Connection",
+                        "name": peering_name,
+                        "network": net_name,
+                    }
+                )
+                if do_cleanup:
+                    try:
+                        op = (
+                            service_networking.services()
+                            .connections()
+                            .deleteConnection(
+                                name=f"services/servicenetworking.googleapis.com/connections/{peering_name}",
+                                body={"consumerNetwork": consumer_network},
+                            )
+                            .execute()
+                        )
+                        while not op.get("done"):
+                            time.sleep(2)
+                            op = (
+                                service_networking.operations()
+                                .get(name=op["name"])
+                                .execute()
+                            )
+                        if "error" in op:
+                            logging.warning(
+                                f"Service Networking connection deletion failed for {peering_name} ({net_name}): {op['error']}"
+                            )
+                            networks_with_failed_connections.add(net_name)
+                        else:
+                            actions.append(
+                                f"Deleted Service Networking Connection: {peering_name} ({net_name})"
+                            )
+                    except Exception as e:
+                        logging.warning(
+                            f"Could not delete Service Networking connection {peering_name} for {net_name}: {e}"
+                        )
+                        networks_with_failed_connections.add(net_name)
+
+    # 6. Static/External IP Addresses (must go before networks)
     # aggregated_list returns regional addresses under "regions/{region}" keys
     # and global addresses under the "global" key — each requires a different
     # client and delete call.
@@ -160,12 +244,20 @@ def handle_compute(
                     f"Deleted Compute Address: {addr.name} ({'global' if is_global else addr_scope})"
                 )
 
-    # 6. Networks & VPC Peerings (Global; peerings removed before network deletion)
+    # 7. Networks & VPC Peerings (Global; peerings removed before network deletion)
     net_client = compute_v1.NetworksClient()
     for net in net_client.list(project=project):
         if match_prefix(net.name, prefix):
             found.append({"type": "compute.Network", "name": net.name})
             if do_cleanup:
+                if net.name in networks_with_failed_connections:
+                    msg = (
+                        f"Skipping deletion of Compute Network {net.name}: "
+                        "Service Networking connection cleanup failed earlier"
+                    )
+                    logging.warning(msg)
+                    actions.append(f"[WARN] {msg}")
+                    continue
                 # Remove all peerings on this network before deleting it
                 for peering in net.peerings or []:
                     try:
@@ -207,7 +299,9 @@ def handle_alloydb(
                     client.delete_backup(name=backup.name).result()
                     actions.append(f"Deleted AlloyDB Backup: {backup.name}")
     except Exception as e:
-        logging.warning(f"AlloyDB backup list failed: {e}")
+        msg = f"AlloyDB backup list failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
 
     # 2. Clusters, Instances & Users
     try:
@@ -243,7 +337,9 @@ def handle_alloydb(
                     client.delete_cluster(name=cluster.name).result()
                     actions.append(f"Deleted AlloyDB Cluster: {cluster.name}")
     except Exception as e:
-        logging.warning(f"AlloyDB cluster list failed: {e}")
+        msg = f"AlloyDB cluster list failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
 
     return {"found": found, "actions": actions}
 
@@ -270,7 +366,9 @@ def handle_cloudbuild(project: str, prefix: str, do_cleanup: bool) -> HandlerRes
                     )
                     actions.append(f"Deleted CloudBuild Trigger: {trigger.name}")
     except Exception as e:
-        logging.warning(f"CloudBuild list failed: {e}")
+        msg = f"CloudBuild list failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
 
     return {"found": found, "actions": actions}
 
@@ -302,7 +400,9 @@ def handle_cloudbuildv2(
                     client.delete_connection(name=conn.name).result()
                     actions.append(f"Deleted CloudBuild v2 Connection: {conn.name}")
     except Exception as e:
-        logging.warning(f"CloudBuild v2 list failed: {e}")
+        msg = f"CloudBuild v2 list failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
 
     return {"found": found, "actions": actions}
 
