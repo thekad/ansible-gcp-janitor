@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Callable, TypedDict
 
 import functions_framework
 
@@ -21,6 +22,15 @@ class HandlerResult(TypedDict):
 DEFAULT_REGION = "us-central1"
 DEFAULT_PREFIX = "ansible-test-"
 
+# Bounded worker count for concurrent delete operations. Deletes are
+# I/O-bound (almost all wall time is spent blocked on GCP long-running
+# operations), so this is intentionally NOT derived from CPU core count —
+# doing so would collapse concurrency back to ~1 on a single-vCPU Cloud Run
+# instance. The value is a fixed middle ground: comfortably more than a
+# typical leftover-resource batch, well under GCP's per-project concurrent
+# operation limits.
+MAX_DELETE_WORKERS = 8
+
 
 def match_prefix(name: str, prefix: str) -> bool:
     """Checks if a resource name or display_name matches the filter prefix."""
@@ -31,9 +41,33 @@ def match_prefix(name: str, prefix: str) -> bool:
     return short_name.startswith(prefix)
 
 
+def _run_concurrent(tasks: list[Callable[[], None]]) -> None:
+    """Runs zero-argument callables concurrently, bounded by
+    MAX_DELETE_WORKERS, blocking until all have completed.
+
+    This exists because every delete call in this module blocks on a GCP
+    long-running operation (`.result()`), and running them serially causes
+    the cumulative wait time to risk exceeding the Cloud Function's timeout.
+    Each callable is expected to handle its own errors and append its own
+    success/failure messages to the shared `actions` list where
+    appropriate — CPython's list/set append/add are atomic across threads,
+    so no additional locking is required. Callables that don't catch their
+    own exceptions will have them re-raised here once all tasks complete.
+    """
+    if not tasks:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_DELETE_WORKERS) as pool:
+        futures = [pool.submit(task) for task in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+
 def handle_compute(
     project: str, region: str, prefix: str, do_cleanup: bool
 ) -> HandlerResult:
+    import google.auth
+    import google_auth_httplib2
+    import httplib2
     from google.cloud import compute_v1
     from googleapiclient.discovery import build
 
@@ -41,6 +75,7 @@ def handle_compute(
 
     # 1. Instances
     inst_client = compute_v1.InstancesClient()
+    instance_tasks: list[Callable[[], None]] = []
     for zone_str, response in inst_client.aggregated_list(project=project):
         if response.instances:
             zone = zone_str.split("/")[-1]
@@ -55,15 +90,21 @@ def handle_compute(
                             }
                         )
                         if do_cleanup:
-                            inst_client.delete(
-                                project=project, zone=zone, instance=inst.name
-                            ).result()
-                            actions.append(
-                                f"Deleted Compute Instance: {inst.name} ({zone})"
-                            )
+
+                            def _delete_instance(inst=inst, zone=zone) -> None:
+                                inst_client.delete(
+                                    project=project, zone=zone, instance=inst.name
+                                ).result()
+                                actions.append(
+                                    f"Deleted Compute Instance: {inst.name} ({zone})"
+                                )
+
+                            instance_tasks.append(_delete_instance)
+    _run_concurrent(instance_tasks)
 
     # 2. Disks
     disk_client = compute_v1.DisksClient()
+    disk_tasks: list[Callable[[], None]] = []
     for zone_str, response in disk_client.aggregated_list(project=project):
         if response.disks:
             zone = zone_str.split("/")[-1]
@@ -74,21 +115,32 @@ def handle_compute(
                             {"type": "compute.Disk", "name": disk.name, "zone": zone}
                         )
                         if do_cleanup:
-                            disk_client.delete(
-                                project=project, zone=zone, disk=disk.name
-                            ).result()
-                            actions.append(
-                                f"Deleted Compute Disk: {disk.name} ({zone})"
-                            )
+
+                            def _delete_disk(disk=disk, zone=zone) -> None:
+                                disk_client.delete(
+                                    project=project, zone=zone, disk=disk.name
+                                ).result()
+                                actions.append(
+                                    f"Deleted Compute Disk: {disk.name} ({zone})"
+                                )
+
+                            disk_tasks.append(_delete_disk)
+    _run_concurrent(disk_tasks)
 
     # 3. Firewall Rules (must go before networks)
     fw_client = compute_v1.FirewallsClient()
+    firewall_tasks: list[Callable[[], None]] = []
     for fw in fw_client.list(project=project):
         if match_prefix(fw.name, prefix):
             found.append({"type": "compute.Firewall", "name": fw.name})
             if do_cleanup:
-                fw_client.delete(project=project, firewall=fw.name).result()
-                actions.append(f"Deleted Compute Firewall: {fw.name}")
+
+                def _delete_firewall(fw=fw) -> None:
+                    fw_client.delete(project=project, firewall=fw.name).result()
+                    actions.append(f"Deleted Compute Firewall: {fw.name}")
+
+                firewall_tasks.append(_delete_firewall)
+    _run_concurrent(firewall_tasks)
 
     # 4. Subnetworks (regional; must go before networks)
     # Build a set of network selfLinks whose subnets were auto-created so we
@@ -100,6 +152,7 @@ def handle_compute(
         for net in _net_pre.list(project=project)
         if net.auto_create_subnetworks
     }
+    subnet_tasks: list[Callable[[], None]] = []
     for zone_str, response in subnet_client.aggregated_list(project=project):
         if response.subnetworks:
             subnet_region = zone_str.split("/")[-1]
@@ -119,12 +172,21 @@ def handle_compute(
                             }
                         )
                         if do_cleanup:
-                            subnet_client.delete(
-                                project=project,
-                                region=subnet_region,
-                                subnetwork=subnet.name,
-                            ).result()
-                            actions.append(f"Deleted Compute Subnetwork: {subnet.name}")
+
+                            def _delete_subnet(
+                                subnet=subnet, subnet_region=subnet_region
+                            ) -> None:
+                                subnet_client.delete(
+                                    project=project,
+                                    region=subnet_region,
+                                    subnetwork=subnet.name,
+                                ).result()
+                                actions.append(
+                                    f"Deleted Compute Subnetwork: {subnet.name}"
+                                )
+
+                            subnet_tasks.append(_delete_subnet)
+    _run_concurrent(subnet_tasks)
 
     # 5. Service Networking Connections (must go before addresses & networks —
     # the allocated PEERING ranges backing these connections, e.g. those
@@ -144,9 +206,25 @@ def handle_compute(
         # The Service Networking API requires the consumer network to be
         # addressed by numeric project number, not project ID — passing the
         # project ID causes a misleading 404 "Producer tenant project not
-        # found" error.
-        project_number = compute_v1.ProjectsClient().get(project=project).id
-        service_networking = build("servicenetworking", "v1", cache_discovery=False)
+        # found" error. Note: compute_v1's Project.id is NOT the project
+        # number (it's an unrelated internal Compute resource identifier) —
+        # the Cloud Resource Manager API is the only reliable source for it.
+        from google.cloud import resourcemanager_v3
+
+        rm_client = resourcemanager_v3.ProjectsClient()
+        project_number = (
+            rm_client.get_project(name=f"projects/{project}").name.split("/")[-1]
+        )
+        # google-api-python-client is httplib2-based, and httplib2.Http()
+        # objects are explicitly documented as not thread-safe — each thread
+        # must use its own instance. The `service_networking` object itself
+        # is safe to share (only used to build request objects), but every
+        # concurrent `.execute()` call below is given its own transport.
+        credentials, _ = google.auth.default()
+        service_networking = build(
+            "servicenetworking", "v1", credentials=credentials, cache_discovery=False
+        )
+        connection_tasks: list[Callable[[], None]] = []
         for net_name in matched_networks:
             consumer_network = f"projects/{project_number}/global/networks/{net_name}"
             try:
@@ -165,6 +243,10 @@ def handle_compute(
                 )
                 logging.warning(msg)
                 actions.append(f"[WARN] {msg}")
+                # Unable to verify connection state — treat conservatively as
+                # unsafe, same as a failed delete, so the network isn't
+                # deleted out from under an unconfirmed connection.
+                networks_with_failed_connections.add(net_name)
                 continue
             for conn in response.get("connections", []):
                 peering_name = conn.get("peering", "")
@@ -176,37 +258,50 @@ def handle_compute(
                     }
                 )
                 if do_cleanup:
-                    try:
-                        op = (
-                            service_networking.services()
-                            .connections()
-                            .deleteConnection(
-                                name=f"services/servicenetworking.googleapis.com/connections/{peering_name}",
-                                body={"consumerNetwork": consumer_network},
-                            )
-                            .execute()
+
+                    def _delete_connection(
+                        peering_name=peering_name,
+                        net_name=net_name,
+                        consumer_network=consumer_network,
+                    ) -> None:
+                        # Thread-local transport — see thread-safety note above.
+                        thread_http = google_auth_httplib2.AuthorizedHttp(
+                            credentials, http=httplib2.Http()
                         )
-                        while not op.get("done"):
-                            time.sleep(2)
+                        try:
                             op = (
-                                service_networking.operations()
-                                .get(name=op["name"])
-                                .execute()
+                                service_networking.services()
+                                .connections()
+                                .deleteConnection(
+                                    name=f"services/servicenetworking.googleapis.com/connections/{peering_name}",
+                                    body={"consumerNetwork": consumer_network},
+                                )
+                                .execute(http=thread_http)
                             )
-                        if "error" in op:
+                            while not op.get("done"):
+                                time.sleep(2)
+                                op = (
+                                    service_networking.operations()
+                                    .get(name=op["name"])
+                                    .execute(http=thread_http)
+                                )
+                            if "error" in op:
+                                logging.warning(
+                                    f"Service Networking connection deletion failed for {peering_name} ({net_name}): {op['error']}"
+                                )
+                                networks_with_failed_connections.add(net_name)
+                            else:
+                                actions.append(
+                                    f"Deleted Service Networking Connection: {peering_name} ({net_name})"
+                                )
+                        except Exception as e:
                             logging.warning(
-                                f"Service Networking connection deletion failed for {peering_name} ({net_name}): {op['error']}"
+                                f"Could not delete Service Networking connection {peering_name} for {net_name}: {e}"
                             )
                             networks_with_failed_connections.add(net_name)
-                        else:
-                            actions.append(
-                                f"Deleted Service Networking Connection: {peering_name} ({net_name})"
-                            )
-                    except Exception as e:
-                        logging.warning(
-                            f"Could not delete Service Networking connection {peering_name} for {net_name}: {e}"
-                        )
-                        networks_with_failed_connections.add(net_name)
+
+                    connection_tasks.append(_delete_connection)
+        _run_concurrent(connection_tasks)
 
     # 6. Static/External IP Addresses (must go before networks)
     # aggregated_list returns regional addresses under "regions/{region}" keys
@@ -214,6 +309,7 @@ def handle_compute(
     # client and delete call.
     global_addr_client = compute_v1.GlobalAddressesClient()
     addr_client = compute_v1.AddressesClient()
+    address_tasks: list[Callable[[], None]] = []
     for zone_str, response in addr_client.aggregated_list(project=project):
         if not response.addresses:
             continue
@@ -232,20 +328,28 @@ def handle_compute(
                 }
             )
             if do_cleanup:
-                if is_global:
-                    global_addr_client.delete(
-                        project=project, address=addr.name
-                    ).result()
-                else:
-                    addr_client.delete(
-                        project=project, region=addr_scope, address=addr.name
-                    ).result()
-                actions.append(
-                    f"Deleted Compute Address: {addr.name} ({'global' if is_global else addr_scope})"
-                )
+
+                def _delete_address(
+                    addr=addr, addr_scope=addr_scope, is_global=is_global
+                ) -> None:
+                    if is_global:
+                        global_addr_client.delete(
+                            project=project, address=addr.name
+                        ).result()
+                    else:
+                        addr_client.delete(
+                            project=project, region=addr_scope, address=addr.name
+                        ).result()
+                    actions.append(
+                        f"Deleted Compute Address: {addr.name} ({'global' if is_global else addr_scope})"
+                    )
+
+                address_tasks.append(_delete_address)
+    _run_concurrent(address_tasks)
 
     # 7. Networks & VPC Peerings (Global; peerings removed before network deletion)
     net_client = compute_v1.NetworksClient()
+    network_tasks: list[Callable[[], None]] = []
     for net in net_client.list(project=project):
         if match_prefix(net.name, prefix):
             found.append({"type": "compute.Network", "name": net.name})
@@ -258,25 +362,30 @@ def handle_compute(
                     logging.warning(msg)
                     actions.append(f"[WARN] {msg}")
                     continue
-                # Remove all peerings on this network before deleting it
-                for peering in net.peerings or []:
-                    try:
-                        net_client.remove_peering(
-                            project=project,
-                            network=net.name,
-                            networks_remove_peering_request_resource=compute_v1.NetworksRemovePeeringRequest(
-                                name=peering.name
-                            ),
-                        ).result()
-                        actions.append(
-                            f"Removed VPC Peering: {peering.name} from {net.name}"
-                        )
-                    except Exception as e:
-                        logging.warning(
-                            f"Could not remove peering {peering.name} from {net.name}: {e}"
-                        )
-                net_client.delete(project=project, network=net.name).result()
-                actions.append(f"Deleted Compute Network: {net.name}")
+
+                def _delete_network(net=net) -> None:
+                    # Remove all peerings on this network before deleting it
+                    for peering in net.peerings or []:
+                        try:
+                            net_client.remove_peering(
+                                project=project,
+                                network=net.name,
+                                networks_remove_peering_request_resource=compute_v1.NetworksRemovePeeringRequest(
+                                    name=peering.name
+                                ),
+                            ).result()
+                            actions.append(
+                                f"Removed VPC Peering: {peering.name} from {net.name}"
+                            )
+                        except Exception as e:
+                            logging.warning(
+                                f"Could not remove peering {peering.name} from {net.name}: {e}"
+                            )
+                    net_client.delete(project=project, network=net.name).result()
+                    actions.append(f"Deleted Compute Network: {net.name}")
+
+                network_tasks.append(_delete_network)
+    _run_concurrent(network_tasks)
 
     return {"found": found, "actions": actions}
 
@@ -292,12 +401,18 @@ def handle_alloydb(
 
     # 1. Backups
     try:
+        backup_tasks: list[Callable[[], None]] = []
         for backup in client.list_backups(parent=parent):
             if match_prefix(backup.name, prefix):
                 found.append({"type": "alloydb.Backup", "name": backup.name})
                 if do_cleanup:
-                    client.delete_backup(name=backup.name).result()
-                    actions.append(f"Deleted AlloyDB Backup: {backup.name}")
+
+                    def _delete_backup(backup=backup) -> None:
+                        client.delete_backup(name=backup.name).result()
+                        actions.append(f"Deleted AlloyDB Backup: {backup.name}")
+
+                    backup_tasks.append(_delete_backup)
+        _run_concurrent(backup_tasks)
     except Exception as e:
         msg = f"AlloyDB backup list failed: {e}"
         logging.warning(msg)
@@ -305,6 +420,8 @@ def handle_alloydb(
 
     # 2. Clusters, Instances & Users
     try:
+        sub_resource_tasks: list[Callable[[], None]] = []
+        matched_clusters = []
         for cluster in client.list_clusters(parent=parent):
             cluster_matched = match_prefix(cluster.name, prefix) or match_prefix(
                 cluster.display_name, prefix
@@ -319,23 +436,44 @@ def handle_alloydb(
                 ):
                     found.append({"type": "alloydb.Instance", "name": instance.name})
                     if do_cleanup:
-                        client.delete_instance(name=instance.name).result()
-                        actions.append(f"Deleted AlloyDB Instance: {instance.name}")
+
+                        def _delete_instance(instance=instance) -> None:
+                            client.delete_instance(name=instance.name).result()
+                            actions.append(f"Deleted AlloyDB Instance: {instance.name}")
+
+                        sub_resource_tasks.append(_delete_instance)
 
             # Sub-resources: Users
             for user in client.list_users(parent=cluster.name):
                 if cluster_matched or match_prefix(user.name, prefix):
                     found.append({"type": "alloydb.User", "name": user.name})
                     if do_cleanup:
-                        client.delete_user(name=user.name).result()
-                        actions.append(f"Deleted AlloyDB User: {user.name}")
+
+                        def _delete_user(user=user) -> None:
+                            client.delete_user(name=user.name).result()
+                            actions.append(f"Deleted AlloyDB User: {user.name}")
+
+                        sub_resource_tasks.append(_delete_user)
 
             # Parent Cluster
             if cluster_matched:
                 found.append({"type": "alloydb.Cluster", "name": cluster.name})
                 if do_cleanup:
-                    client.delete_cluster(name=cluster.name).result()
-                    actions.append(f"Deleted AlloyDB Cluster: {cluster.name}")
+                    matched_clusters.append(cluster)
+
+        # Instances & Users must be fully deleted before their parent
+        # cluster; clusters themselves are independent of each other.
+        _run_concurrent(sub_resource_tasks)
+
+        cluster_tasks: list[Callable[[], None]] = []
+        for cluster in matched_clusters:
+
+            def _delete_cluster(cluster=cluster) -> None:
+                client.delete_cluster(name=cluster.name).result()
+                actions.append(f"Deleted AlloyDB Cluster: {cluster.name}")
+
+            cluster_tasks.append(_delete_cluster)
+        _run_concurrent(cluster_tasks)
     except Exception as e:
         msg = f"AlloyDB cluster list failed: {e}"
         logging.warning(msg)
@@ -351,6 +489,7 @@ def handle_cloudbuild(project: str, prefix: str, do_cleanup: bool) -> HandlerRes
     found, actions = [], []
 
     try:
+        trigger_tasks: list[Callable[[], None]] = []
         for trigger in client.list_build_triggers(project_id=project):
             if match_prefix(trigger.name, prefix):
                 found.append(
@@ -361,10 +500,15 @@ def handle_cloudbuild(project: str, prefix: str, do_cleanup: bool) -> HandlerRes
                     }
                 )
                 if do_cleanup:
-                    client.delete_build_trigger(
-                        project_id=project, trigger_id=trigger.id
-                    )
-                    actions.append(f"Deleted CloudBuild Trigger: {trigger.name}")
+
+                    def _delete_trigger(trigger=trigger) -> None:
+                        client.delete_build_trigger(
+                            project_id=project, trigger_id=trigger.id
+                        )
+                        actions.append(f"Deleted CloudBuild Trigger: {trigger.name}")
+
+                    trigger_tasks.append(_delete_trigger)
+        _run_concurrent(trigger_tasks)
     except Exception as e:
         msg = f"CloudBuild list failed: {e}"
         logging.warning(msg)
@@ -383,6 +527,8 @@ def handle_cloudbuildv2(
     found, actions = [], []
 
     try:
+        repo_tasks: list[Callable[[], None]] = []
+        matched_connections = []
         for conn in client.list_connections(parent=parent):
             conn_matched = match_prefix(conn.name, prefix)
 
@@ -391,14 +537,32 @@ def handle_cloudbuildv2(
                 if conn_matched or match_prefix(repo.name, prefix):
                     found.append({"type": "cloudbuildv2.Repository", "name": repo.name})
                     if do_cleanup:
-                        client.delete_repository(name=repo.name).result()
-                        actions.append(f"Deleted CloudBuild v2 Repository: {repo.name}")
+
+                        def _delete_repo(repo=repo) -> None:
+                            client.delete_repository(name=repo.name).result()
+                            actions.append(
+                                f"Deleted CloudBuild v2 Repository: {repo.name}"
+                            )
+
+                        repo_tasks.append(_delete_repo)
 
             if conn_matched:
                 found.append({"type": "cloudbuildv2.Connection", "name": conn.name})
                 if do_cleanup:
-                    client.delete_connection(name=conn.name).result()
-                    actions.append(f"Deleted CloudBuild v2 Connection: {conn.name}")
+                    matched_connections.append(conn)
+
+        # Repositories must be deleted before their parent connection.
+        _run_concurrent(repo_tasks)
+
+        connection_tasks: list[Callable[[], None]] = []
+        for conn in matched_connections:
+
+            def _delete_connection(conn=conn) -> None:
+                client.delete_connection(name=conn.name).result()
+                actions.append(f"Deleted CloudBuild v2 Connection: {conn.name}")
+
+            connection_tasks.append(_delete_connection)
+        _run_concurrent(connection_tasks)
     except Exception as e:
         msg = f"CloudBuild v2 list failed: {e}"
         logging.warning(msg)
@@ -418,38 +582,62 @@ def handle_colab(
 
     # 1. Schedules
     sched_client = aiplatform_v1.ScheduleServiceClient(client_options=opts)
+    schedule_tasks: list[Callable[[], None]] = []
     for sched in sched_client.list_schedules(parent=parent):
         if match_prefix(sched.name, prefix) or match_prefix(sched.display_name, prefix):
             found.append({"type": "colab.Schedule", "name": sched.name})
             if do_cleanup:
-                sched_client.delete_schedule(name=sched.name).result()
-                actions.append(f"Deleted Colab Schedule: {sched.name}")
+
+                def _delete_schedule(sched=sched) -> None:
+                    sched_client.delete_schedule(name=sched.name).result()
+                    actions.append(f"Deleted Colab Schedule: {sched.name}")
+
+                schedule_tasks.append(_delete_schedule)
+    _run_concurrent(schedule_tasks)
 
     # 2. Notebook Runtimes, Execution Jobs, Runtime Templates
     nb_client = aiplatform_v1.NotebookServiceClient(client_options=opts)
 
+    job_tasks: list[Callable[[], None]] = []
     for job in nb_client.list_notebook_execution_jobs(parent=parent):
         if match_prefix(job.name, prefix) or match_prefix(job.display_name, prefix):
             found.append({"type": "colab.NotebookExecution", "name": job.name})
             if do_cleanup:
-                nb_client.delete_notebook_execution_job(name=job.name).result()
-                actions.append(f"Deleted Colab Notebook Execution Job: {job.name}")
 
+                def _delete_job(job=job) -> None:
+                    nb_client.delete_notebook_execution_job(name=job.name).result()
+                    actions.append(f"Deleted Colab Notebook Execution Job: {job.name}")
+
+                job_tasks.append(_delete_job)
+    _run_concurrent(job_tasks)
+
+    runtime_tasks: list[Callable[[], None]] = []
     for runtime in nb_client.list_notebook_runtimes(parent=parent):
         if match_prefix(runtime.name, prefix) or match_prefix(
             runtime.display_name, prefix
         ):
             found.append({"type": "colab.Runtime", "name": runtime.name})
             if do_cleanup:
-                nb_client.delete_notebook_runtime(name=runtime.name).result()
-                actions.append(f"Deleted Colab Runtime: {runtime.name}")
 
+                def _delete_runtime(runtime=runtime) -> None:
+                    nb_client.delete_notebook_runtime(name=runtime.name).result()
+                    actions.append(f"Deleted Colab Runtime: {runtime.name}")
+
+                runtime_tasks.append(_delete_runtime)
+    _run_concurrent(runtime_tasks)
+
+    template_tasks: list[Callable[[], None]] = []
     for tmpl in nb_client.list_notebook_runtime_templates(parent=parent):
         if match_prefix(tmpl.name, prefix) or match_prefix(tmpl.display_name, prefix):
             found.append({"type": "colab.RuntimeTemplate", "name": tmpl.name})
             if do_cleanup:
-                nb_client.delete_notebook_runtime_template(name=tmpl.name).result()
-                actions.append(f"Deleted Colab Runtime Template: {tmpl.name}")
+
+                def _delete_template(tmpl=tmpl) -> None:
+                    nb_client.delete_notebook_runtime_template(name=tmpl.name).result()
+                    actions.append(f"Deleted Colab Runtime Template: {tmpl.name}")
+
+                template_tasks.append(_delete_template)
+    _run_concurrent(template_tasks)
 
     return {"found": found, "actions": actions}
 
@@ -494,14 +682,27 @@ def handle_vertexai(
     ) -> None:
         try:
             client = client_cls(client_options=opts)
+            tasks: list[Callable[[], None]] = []
             for item in getattr(client, list_method)(parent=parent):
                 name = getattr(item, "name", "")
                 disp = getattr(item, "display_name", "")
                 if vertex_match(name, disp):
                     found.append({"type": f"vertexai.{asset_type}", "name": name})
                     if do_cleanup:
-                        getattr(client, delete_method)(name=name).result()
-                        actions.append(f"Deleted Vertex AI {asset_type}: {name}")
+
+                        def _delete(name=name) -> None:
+                            try:
+                                getattr(client, delete_method)(name=name).result()
+                                actions.append(
+                                    f"Deleted Vertex AI {asset_type}: {name}"
+                                )
+                            except Exception as de:
+                                logging.warning(
+                                    f"Could not delete Vertex AI {asset_type} {name}: {de}"
+                                )
+
+                        tasks.append(_delete)
+            _run_concurrent(tasks)
         except Exception as e:
             msg = f"Vertex AI {asset_type} scan failed: {e}"
             logging.warning(msg)
@@ -516,6 +717,7 @@ def handle_vertexai(
     ) -> None:
         try:
             client = client_cls(client_options=opts)
+            tasks: list[Callable[[], None]] = []
             for item in getattr(client, list_method)(parent=parent):
                 name = getattr(item, "name", "")
                 disp = getattr(item, "display_name", "")
@@ -523,20 +725,26 @@ def handle_vertexai(
                     continue
                 found.append({"type": f"vertexai.{asset_type}", "name": name})
                 if do_cleanup:
-                    if getattr(item, "state", None) not in _TERMINAL_JOB_STATES:
+                    state = getattr(item, "state", None)
+
+                    def _cancel_and_delete(name=name, state=state) -> None:
+                        if state not in _TERMINAL_JOB_STATES:
+                            try:
+                                getattr(client, cancel_method)(name=name)
+                            except Exception as ce:
+                                logging.warning(
+                                    f"Could not cancel Vertex AI {asset_type} {name}: {ce}"
+                                )
                         try:
-                            getattr(client, cancel_method)(name=name)
-                        except Exception as ce:
+                            getattr(client, delete_method)(name=name).result()
+                            actions.append(f"Deleted Vertex AI {asset_type}: {name}")
+                        except Exception as de:
                             logging.warning(
-                                f"Could not cancel Vertex AI {asset_type} {name}: {ce}"
+                                f"Could not delete Vertex AI {asset_type} {name}: {de}"
                             )
-                    try:
-                        getattr(client, delete_method)(name=name).result()
-                        actions.append(f"Deleted Vertex AI {asset_type}: {name}")
-                    except Exception as de:
-                        logging.warning(
-                            f"Could not delete Vertex AI {asset_type} {name}: {de}"
-                        )
+
+                    tasks.append(_cancel_and_delete)
+            _run_concurrent(tasks)
         except Exception as e:
             msg = f"Vertex AI {asset_type} scan failed: {e}"
             logging.warning(msg)
@@ -545,19 +753,30 @@ def handle_vertexai(
     # Endpoints (Undeploys models before deletion)
     try:
         ep_client = aiplatform_v1.EndpointServiceClient(client_options=opts)
+        endpoint_tasks: list[Callable[[], None]] = []
         for ep in ep_client.list_endpoints(parent=parent):
             if vertex_match(ep.name, ep.display_name):
                 found.append({"type": "vertexai.Endpoint", "name": ep.name})
                 if do_cleanup:
-                    if ep.deployed_models:
-                        for dm in ep.deployed_models:
-                            ep_client.undeploy_endpoint(
-                                request=aiplatform_v1.UndeployEndpointRequest(
-                                    endpoint=ep.name, deployed_model_id=dm.id
-                                )
-                            ).result()
-                    ep_client.delete_endpoint(name=ep.name).result()
-                    actions.append(f"Deleted Vertex AI Endpoint: {ep.name}")
+
+                    def _delete_endpoint(ep=ep) -> None:
+                        try:
+                            if ep.deployed_models:
+                                for dm in ep.deployed_models:
+                                    ep_client.undeploy_endpoint(
+                                        request=aiplatform_v1.UndeployEndpointRequest(
+                                            endpoint=ep.name, deployed_model_id=dm.id
+                                        )
+                                    ).result()
+                            ep_client.delete_endpoint(name=ep.name).result()
+                            actions.append(f"Deleted Vertex AI Endpoint: {ep.name}")
+                        except Exception as de:
+                            logging.warning(
+                                f"Could not delete Vertex AI Endpoint {ep.name}: {de}"
+                            )
+
+                    endpoint_tasks.append(_delete_endpoint)
+        _run_concurrent(endpoint_tasks)
     except Exception as e:
         msg = f"Vertex AI Endpoint scan failed: {e}"
         logging.warning(msg)
@@ -619,18 +838,31 @@ def handle_vertexai(
     # and IndexEndpoints must be deleted before the backing Indexes.
     try:
         ie_client = aiplatform_v1.IndexEndpointServiceClient(client_options=opts)
+        index_endpoint_tasks: list[Callable[[], None]] = []
         for ie in ie_client.list_index_endpoints(parent=parent):
             if vertex_match(ie.name, ie.display_name):
                 found.append({"type": "vertexai.IndexEndpoint", "name": ie.name})
                 if do_cleanup:
-                    for di in ie.deployed_indexes or []:
-                        ie_client.undeploy_index(
-                            request=aiplatform_v1.UndeployIndexRequest(
-                                index_endpoint=ie.name, deployed_index_id=di.id
+
+                    def _delete_index_endpoint(ie=ie) -> None:
+                        try:
+                            for di in ie.deployed_indexes or []:
+                                ie_client.undeploy_index(
+                                    request=aiplatform_v1.UndeployIndexRequest(
+                                        index_endpoint=ie.name, deployed_index_id=di.id
+                                    )
+                                ).result()
+                            ie_client.delete_index_endpoint(name=ie.name).result()
+                            actions.append(
+                                f"Deleted Vertex AI IndexEndpoint: {ie.name}"
                             )
-                        ).result()
-                    ie_client.delete_index_endpoint(name=ie.name).result()
-                    actions.append(f"Deleted Vertex AI IndexEndpoint: {ie.name}")
+                        except Exception as de:
+                            logging.warning(
+                                f"Could not delete Vertex AI IndexEndpoint {ie.name}: {de}"
+                            )
+
+                    index_endpoint_tasks.append(_delete_index_endpoint)
+        _run_concurrent(index_endpoint_tasks)
     except Exception as e:
         msg = f"Vertex AI IndexEndpoint scan failed: {e}"
         logging.warning(msg)

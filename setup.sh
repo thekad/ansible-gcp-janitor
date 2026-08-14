@@ -15,6 +15,7 @@ gcloud services enable \
     cloudasset.googleapis.com \
     cloudbuild.googleapis.com \
     cloudfunctions.googleapis.com \
+    cloudresourcemanager.googleapis.com \
     cloudscheduler.googleapis.com \
     compute.googleapis.com \
     run.googleapis.com
@@ -32,6 +33,7 @@ fi
 ROLES=(
     "roles/aiplatform.admin"                # Delete Vertex AI models, runtimes, & endpoints
     "roles/alloydb.admin"                   # Delete AlloyDB instances & clusters
+    "roles/browser"                         # Resolve project ID -> project number (required by Service Networking API)
     "roles/cloudbuild.admin"                # Destroy cloudbuild triggers
     "roles/compute.admin"                   # Delete instances, disks, firewall rules, addresses, and networks
     "roles/run.invoker"                     # janitor-bot acts as Scheduler's OIDC identity to invoke itself
