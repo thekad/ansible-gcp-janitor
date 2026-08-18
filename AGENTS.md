@@ -58,6 +58,7 @@ handle_cloudbuild(project, prefix, do_cleanup) -> HandlerResult                 
 handle_cloudbuildv2(project, region, prefix, do_cleanup) -> HandlerResult             # Cloud Build v2 connections and repositories
 handle_colab(project, region, prefix, do_cleanup) -> HandlerResult                   # Colab/Notebook schedules, runtimes, templates
 handle_vertexai(project, region, prefix, do_cleanup) -> HandlerResult                 # Vertex AI endpoints, indexes, datasets, etc.
+handle_storage(project, prefix, do_cleanup) -> HandlerResult                          # Cloud Storage buckets (global; force-empties before delete)
 scan_and_clean_resources(request: Request) -> tuple[str, int] | tuple[str, int, dict] # HTTP entrypoint — orchestrates all handlers
 ```
 
@@ -74,7 +75,7 @@ The `scanners` list in `scan_and_clean_resources` is **order-sensitive**. Do not
 reorder without understanding the dependency chain.
 
 ```
-alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → compute
+alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → storage → compute
 ```
 
 **Why compute is last:** AlloyDB clusters create Private Service Access (PSA)

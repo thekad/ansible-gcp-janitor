@@ -960,6 +960,43 @@ def handle_vertexai(
     return {"found": found, "actions": actions}
 
 
+def handle_storage(project: str, prefix: str, do_cleanup: bool) -> HandlerResult:
+    from google.cloud import storage
+
+    client = storage.Client(project=project)
+    found: list[dict[str, str]] = []
+    actions: list[str] = []
+
+    try:
+        bucket_tasks: list[Callable[[], None]] = []
+        for bucket in client.list_buckets():
+            if not match_prefix(bucket.name, prefix):
+                continue
+            found.append({"type": "storage.Bucket", "name": bucket.name})
+            if do_cleanup:
+
+                def _delete_bucket(bucket_name: str = bucket.name) -> None:
+                    try:
+                        b = client.bucket(bucket_name)
+                        for blob in client.list_blobs(bucket_name, versions=True):
+                            blob.delete()
+                        b.delete()
+                        actions.append(f"Deleted Storage Bucket: {bucket_name}")
+                    except Exception as e:
+                        msg = f"Could not delete Storage Bucket {bucket_name}: {e}"
+                        logging.warning(msg)
+                        actions.append(f"[WARN] {msg}")
+
+                bucket_tasks.append(_delete_bucket)
+        _run_concurrent(bucket_tasks)
+    except Exception as e:
+        msg = f"Storage bucket list failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
+
+    return {"found": found, "actions": actions}
+
+
 # --- HTTP Entrypoint ---
 
 
@@ -1004,6 +1041,7 @@ def scan_and_clean_resources(
         ),
         ("colab", lambda: handle_colab(project_id, region, prefix, do_cleanup)),
         ("vertexai", lambda: handle_vertexai(project_id, region, prefix, do_cleanup)),
+        ("storage", lambda: handle_storage(project_id, prefix, do_cleanup)),
         ("compute", lambda: handle_compute(project_id, region, prefix, do_cleanup)),
     ]
 

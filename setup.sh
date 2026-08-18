@@ -18,7 +18,8 @@ gcloud services enable \
     cloudresourcemanager.googleapis.com \
     cloudscheduler.googleapis.com \
     compute.googleapis.com \
-    run.googleapis.com
+    run.googleapis.com \
+    storage.googleapis.com
 
 # 2. Create Service Account if it does not exist
 if ! gcloud iam service-accounts describe "${SA_EMAIL}" &>/dev/null; then
@@ -38,6 +39,7 @@ ROLES=(
     "roles/compute.admin"                   # Delete instances, disks, firewall rules, addresses, and networks
     "roles/run.invoker"                     # janitor-bot acts as Scheduler's OIDC identity to invoke itself
     "roles/servicenetworking.networksAdmin" # Disconnect service networking connections
+    "roles/storage.admin"                   # List/empty/delete Cloud Storage buckets and objects
 )
 
 echo "Binding IAM roles to ${SA_EMAIL}..."
