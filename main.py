@@ -750,7 +750,62 @@ def handle_vertexai(
             logging.warning(msg)
             actions.append(f"[WARN] {msg}")
 
-    # Endpoints (Undeploys models before deletion)
+    # Models & Endpoints — four-phase coordinated cleanup:
+    #   1. Scan models matching the prefix
+    #   2. Undeploy each matched model from every endpoint that holds it
+    #   3. Delete matched models (now safe — all deployments cleared)
+    #   4. Scan endpoints matching the prefix by name/display_name and delete them
+    try:
+        model_client = aiplatform_v1.ModelServiceClient(client_options=opts)
+        ep_client = aiplatform_v1.EndpointServiceClient(client_options=opts)
+
+        # Phase 1: collect matched models
+        matched_models = [
+            m for m in model_client.list_models(parent=parent)
+            if vertex_match(m.name, m.display_name)
+        ]
+        for m in matched_models:
+            found.append({"type": "vertexai.Model", "name": m.name})
+
+        if do_cleanup:
+            # Phase 2: undeploy each matched model from all endpoints that hold it
+            matched_model_ids = {m.name.split("/")[-1] for m in matched_models}
+            undeploy_tasks: list[Callable[[], None]] = []
+            for ep in ep_client.list_endpoints(parent=parent):
+                for dm in ep.deployed_models or []:
+                    if dm.model.split("/")[-1] in matched_model_ids:
+                        def _undeploy(ep_name=ep.name, dm_id=dm.id, model_name=dm.model) -> None:
+                            try:
+                                ep_client.undeploy_model(
+                                    request=aiplatform_v1.UndeployModelRequest(
+                                        endpoint=ep_name, deployed_model_id=dm_id
+                                    )
+                                ).result()
+                            except Exception as ue:
+                                logging.warning(
+                                    f"Could not undeploy Model {model_name} from {ep_name}: {ue}"
+                                )
+                        undeploy_tasks.append(_undeploy)
+            _run_concurrent(undeploy_tasks)
+
+            # Phase 3: delete matched models
+            model_tasks: list[Callable[[], None]] = []
+            for m in matched_models:
+                def _delete_model(model_name=m.name) -> None:
+                    try:
+                        model_client.delete_model(name=model_name).result()
+                        actions.append(f"Deleted Vertex AI Model: {model_name}")
+                    except Exception as de:
+                        logging.warning(f"Could not delete Vertex AI Model {model_name}: {de}")
+                model_tasks.append(_delete_model)
+            _run_concurrent(model_tasks)
+
+    except Exception as e:
+        msg = f"Vertex AI Model scan failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
+
+    # Phase 4: scan & delete matched endpoints
     try:
         ep_client = aiplatform_v1.EndpointServiceClient(client_options=opts)
         endpoint_tasks: list[Callable[[], None]] = []
@@ -758,34 +813,26 @@ def handle_vertexai(
             if vertex_match(ep.name, ep.display_name):
                 found.append({"type": "vertexai.Endpoint", "name": ep.name})
                 if do_cleanup:
-
                     def _delete_endpoint(ep=ep) -> None:
                         try:
-                            if ep.deployed_models:
-                                for dm in ep.deployed_models:
-                                    ep_client.undeploy_endpoint(
-                                        request=aiplatform_v1.UndeployEndpointRequest(
-                                            endpoint=ep.name, deployed_model_id=dm.id
-                                        )
-                                    ).result()
+                            for dm in ep.deployed_models or []:
+                                ep_client.undeploy_model(
+                                    request=aiplatform_v1.UndeployModelRequest(
+                                        endpoint=ep.name, deployed_model_id=dm.id
+                                    )
+                                ).result()
                             ep_client.delete_endpoint(name=ep.name).result()
                             actions.append(f"Deleted Vertex AI Endpoint: {ep.name}")
                         except Exception as de:
                             logging.warning(
                                 f"Could not delete Vertex AI Endpoint {ep.name}: {de}"
                             )
-
                     endpoint_tasks.append(_delete_endpoint)
         _run_concurrent(endpoint_tasks)
     except Exception as e:
         msg = f"Vertex AI Endpoint scan failed: {e}"
         logging.warning(msg)
         actions.append(f"[WARN] {msg}")
-
-    # Models (must come after Endpoints so deployed-model references are already removed)
-    scan_and_delete(
-        aiplatform_v1.ModelServiceClient, "list_models", "delete_model", "Model"
-    )
 
     # Jobs — cancel if non-terminal, then delete
     cancel_and_delete_jobs(
