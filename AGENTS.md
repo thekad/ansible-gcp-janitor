@@ -27,7 +27,7 @@ python3 -m venv .venv
 
 # Verify all imports resolve
 .venv/bin/python -c "
-from google.cloud import compute_v1, alloydb_v1, aiplatform_v1
+from google.cloud import compute_v1, alloydb_v1, aiplatform_v1, bigquery
 from google.cloud.devtools import cloudbuild_v1, cloudbuild_v2
 import functions_framework
 print('imports OK')
@@ -52,6 +52,7 @@ Always re-run `.venv/bin/pip install -r requirements.txt` after pulling changes 
 
 ```
 match_prefix(name: str, prefix: str) -> bool                                          # Strips resource path, checks prefix
+underscore_prefix(prefix: str) -> str                                                  # Converts dashes to underscores for BigQuery/Vertex AI
 handle_compute(project, region, prefix, do_cleanup) -> HandlerResult                  # Compute Engine resources
 handle_alloydb(project, region, prefix, do_cleanup) -> HandlerResult                  # AlloyDB clusters, instances, users, backups
 handle_cloudbuild(project, prefix, do_cleanup) -> HandlerResult                       # Cloud Build triggers
@@ -59,6 +60,7 @@ handle_cloudbuildv2(project, region, prefix, do_cleanup) -> HandlerResult       
 handle_colab(project, region, prefix, do_cleanup) -> HandlerResult                   # Colab/Notebook schedules, runtimes, templates
 handle_vertexai(project, region, prefix, do_cleanup) -> HandlerResult                 # Vertex AI endpoints, indexes, datasets, etc.
 handle_storage(project, prefix, do_cleanup) -> HandlerResult                          # Cloud Storage buckets (global; force-empties before delete)
+handle_bigquery(project, prefix, do_cleanup) -> HandlerResult                          # BigQuery datasets (global; cascades tables/views/routines/models)
 scan_and_clean_resources(request: Request) -> tuple[str, int] | tuple[str, int, dict] # HTTP entrypoint — orchestrates all handlers
 ```
 
@@ -75,13 +77,18 @@ The `scanners` list in `scan_and_clean_resources` is **order-sensitive**. Do not
 reorder without understanding the dependency chain.
 
 ```
-alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → storage → compute
+alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → storage → bigquery → compute
 ```
 
 **Why compute is last:** AlloyDB clusters create Private Service Access (PSA)
 peerings on VPC networks. If compute runs first and tries to delete a network
 while a PSA peering is still active, the GCP API will return a 400. All VPC
 consumers must be deleted before `handle_compute` runs.
+
+**BigQuery has no VPC dependencies** and can sit anywhere before `compute`. It
+uses synchronous delete calls (no long-running operations), and
+`delete_dataset(..., delete_contents=True)` cascades to all contained tables,
+views, routines, and BQML models in one call.
 
 **Within `handle_compute`, order is also fixed:**
 

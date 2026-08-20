@@ -41,6 +41,17 @@ def match_prefix(name: str, prefix: str) -> bool:
     return short_name.startswith(prefix)
 
 
+def underscore_prefix(prefix: str) -> str:
+    """Returns the prefix with dashes converted to underscores.
+
+    Some GCP resources (Vertex AI Featurestore/FeatureOnlineStore/FeatureGroup,
+    BigQuery datasets/tables) disallow dashes in their IDs. Ansible converts the
+    configured prefix to underscores when naming those resources, so callers
+    match both the original and underscore form.
+    """
+    return prefix.replace("-", "_")
+
+
 def _run_concurrent(tasks: list[Callable[[], None]]) -> None:
     """Runs zero-argument callables concurrently, bounded by
     MAX_DELETE_WORKERS, blocking until all have completed.
@@ -654,7 +665,7 @@ def handle_vertexai(
     # Some Vertex AI resources (Featurestore, FeatureOnlineStore, FeatureGroup)
     # require snake_case IDs — hyphens are not allowed. Ansible converts the
     # prefix to underscores when naming those resources, so we match both forms.
-    vertex_prefix = prefix.replace("-", "_")
+    vertex_prefix = underscore_prefix(prefix)
 
     def vertex_match(name: str, disp: str) -> bool:
         return (
@@ -1072,6 +1083,51 @@ def handle_storage(project: str, prefix: str, do_cleanup: bool) -> HandlerResult
     return {"found": found, "actions": actions}
 
 
+def handle_bigquery(project: str, prefix: str, do_cleanup: bool) -> HandlerResult:
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project)
+    found: list[dict[str, str]] = []
+    actions: list[str] = []
+
+    # BigQuery dataset IDs allow only letters, numbers, and underscores (no dashes).
+    # Ansible converts the prefix to underscores when naming datasets, so we match both.
+    bq_prefix = underscore_prefix(prefix)
+
+    def bq_match(name: str) -> bool:
+        return match_prefix(name, prefix) or match_prefix(name, bq_prefix)
+
+    try:
+        dataset_tasks: list[Callable[[], None]] = []
+        for dataset in client.list_datasets():
+            if not bq_match(dataset.dataset_id):
+                continue
+            found.append({"type": "bigquery.Dataset", "name": dataset.dataset_id})
+            if do_cleanup:
+
+                def _delete_dataset(dataset_id: str = dataset.dataset_id) -> None:
+                    try:
+                        # delete_contents=True cascades to all contained tables, views,
+                        # routines, and BQML models in one call.
+                        client.delete_dataset(
+                            dataset_id, delete_contents=True, not_found_ok=True
+                        )
+                        actions.append(f"Deleted BigQuery Dataset: {dataset_id}")
+                    except Exception as e:
+                        msg = f"Could not delete BigQuery Dataset {dataset_id}: {e}"
+                        logging.warning(msg)
+                        actions.append(f"[WARN] {msg}")
+
+                dataset_tasks.append(_delete_dataset)
+        _run_concurrent(dataset_tasks)
+    except Exception as e:
+        msg = f"BigQuery dataset list failed: {e}"
+        logging.warning(msg)
+        actions.append(f"[WARN] {msg}")
+
+    return {"found": found, "actions": actions}
+
+
 # --- HTTP Entrypoint ---
 
 
@@ -1117,6 +1173,7 @@ def scan_and_clean_resources(
         ("colab", lambda: handle_colab(project_id, region, prefix, do_cleanup)),
         ("vertexai", lambda: handle_vertexai(project_id, region, prefix, do_cleanup)),
         ("storage", lambda: handle_storage(project_id, prefix, do_cleanup)),
+        ("bigquery", lambda: handle_bigquery(project_id, prefix, do_cleanup)),
         ("compute", lambda: handle_compute(project_id, region, prefix, do_cleanup)),
     ]
 

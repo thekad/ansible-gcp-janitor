@@ -1,6 +1,7 @@
 functions-framework==3.*
 google-cloud-compute==1.*
 google-cloud-alloydb==0.*
+google-cloud-bigquery==3.*
 google-cloud-build==3.*
 google-cloud-aiplatform==1.*
 google-cloud-resource-manager==1.*

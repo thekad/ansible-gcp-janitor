@@ -12,6 +12,7 @@ echo "Enabling GCP APIs..."
 gcloud services enable \
     aiplatform.googleapis.com \
     alloydb.googleapis.com \
+    bigquery.googleapis.com \
     cloudasset.googleapis.com \
     cloudbuild.googleapis.com \
     cloudfunctions.googleapis.com \
@@ -34,6 +35,7 @@ fi
 ROLES=(
     "roles/aiplatform.admin"                # Delete Vertex AI models, runtimes, & endpoints
     "roles/alloydb.admin"                   # Delete AlloyDB instances & clusters
+    "roles/bigquery.admin"                  # Delete BigQuery datasets, tables, models & routines
     "roles/browser"                         # Resolve project ID -> project number (required by Service Networking API)
     "roles/cloudbuild.admin"                # Destroy cloudbuild triggers
     "roles/compute.admin"                   # Delete instances, disks, firewall rules, addresses, and networks
