@@ -93,14 +93,20 @@ Instances → Disks → Firewall Rules → Subnetworks → Addresses → (VPC Pe
 - VPC peerings are removed inline per-network (not a separate step) immediately before the network delete call.
 - Addresses: `aggregated_list` returns both regional (`regions/{region}` key) and global (`global` key) addresses. Regional addresses use `AddressesClient.delete(region=...)`. Global addresses use `GlobalAddressesClient.delete()` (no region arg). Getting this wrong causes silent misses or "not found" errors.
 
-**Within `handle_vertexai`, order is also fixed for indexes:**
+**Within `handle_vertexai`, order is also fixed for indexes and metadata:**
 
 ```
-Endpoints (undeploy models first) → ... → IndexEndpoints (undeploy indexes first) → Indexes → ...
+Endpoints (undeploy models first) → ... → IndexEndpoints (undeploy indexes first) → Indexes → MetadataStore children (artifacts, contexts, executions) → MetadataStores → ...
 ```
 
 IndexEndpoints must be deleted before backing Indexes, and deployed indexes must
 be undeployed from the endpoint before the endpoint itself can be deleted.
+
+MetadataStores automatically create child resources (artifacts, contexts, executions)
+as ML lineage records when Vertex AI Pipelines or AutoML run. These metadata records
+remain even after the underlying resources (datasets, models, etc.) are deleted. All
+child resources within a MetadataStore must be deleted before the store itself can be
+deleted, otherwise the API returns an error.
 
 ## Adding a new resource type
 
