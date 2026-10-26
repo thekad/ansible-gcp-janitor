@@ -9,8 +9,13 @@ resources are not torn down before their children.
 
 The function exposes a single HTTP endpoint. When invoked it runs a series of
 domain-scoped scanners in a fixed order. In **dry-run mode** (the default) it
-only lists what it finds. In **cleanup mode** it deletes everything it finds,
-waiting for each operation to complete before moving to the next.
+only lists what it finds. In **cleanup mode** it deletes everything it finds.
+
+Within each resource type, deletions run concurrently through a bounded thread
+pool (`MAX_DELETE_WORKERS = 8`), since each delete blocks on a GCP long-running
+operation. Deletions that have cross-dependencies (e.g. child resources before
+their parent) are still ordered: each concurrent batch is awaited in full before
+the dependent batch begins.
 
 ### Deletion order
 
@@ -20,9 +25,27 @@ clusters hold VPC peerings that would block network deletion):
 1. **AlloyDB** — Backups → Instances → Users → Clusters
 2. **Cloud Build** — Build Triggers
 3. **Cloud Build v2** — Repositories → Connections
-4. **Colab / Vertex AI Notebooks** — Schedules → Execution Jobs → Runtimes → Runtime Templates
-5. **Vertex AI** — Endpoints (models undeployed first) → Datasets → Deployment Resource Pools → Index Endpoints (indexes undeployed first) → Indexes → Metadata Stores → Reasoning Engines → Tensorboards → Featurestores → Feature Online Stores → Feature Groups
-6. **Compute** — Instances → Disks → Firewall Rules → Subnetworks → Addresses (regional + global) → VPC Peerings → Networks
+4. **Colab / Vertex AI Notebooks** — Schedules → Execution Jobs → Runtimes →
+   Runtime Templates
+5. **Vertex AI** — Models (undeployed from all endpoints first) → Endpoints
+   (remaining models undeployed first) → Pipeline Jobs → Training Pipelines →
+   Batch Prediction Jobs → Custom Jobs → Hyperparameter Tuning Jobs (each
+   cancelled if non-terminal, then deleted) → Datasets → Deployment Resource
+   Pools → Index Endpoints (indexes undeployed first) → Indexes → Metadata
+   Store children (Artifacts → Contexts → Executions) → Metadata Stores →
+   Reasoning Engines → Tensorboards → Featurestores → Feature Online Stores →
+   Feature Groups
+6. **Storage** — Buckets (force-emptied before delete; cascades blobs/versions,
+   ≤256 objects)
+7. **BigQuery** — Datasets (cascades tables, views, routines, BQML models via
+   `delete_contents=True`)
+8. **Compute** — Instances → Disks → Firewall Rules → Subnetworks → Service
+   Networking Connections → Addresses (regional + global) → Networks (VPC
+   Peerings removed inline before each network)
+
+Storage and BigQuery have no VPC dependencies, so they can run anywhere before
+Compute. Compute runs last because other domains create Private Service Access
+peerings and other VPC attachments that block network deletion.
 
 ## Prerequisites
 
@@ -45,10 +68,13 @@ IAM roles granted to the service account:
 |---|---|
 | `roles/aiplatform.admin` | Delete Vertex AI and Colab resources |
 | `roles/alloydb.admin` | Delete AlloyDB clusters and instances |
+| `roles/bigquery.admin` | Delete BigQuery datasets, tables, models, and routines |
+| `roles/browser` | Resolve project ID to project number (required by Service Networking API) |
 | `roles/cloudbuild.admin` | Destroy Cloud Build triggers |
 | `roles/compute.admin` | Delete instances, disks, firewall rules, addresses, and networks |
 | `roles/run.invoker` | Allow Cloud Scheduler to invoke the function |
 | `roles/servicenetworking.networksAdmin` | Remove PSA/service networking peerings |
+| `roles/storage.admin` | List, empty, and delete Cloud Storage buckets and objects |
 
 ## Deployment
 
@@ -109,6 +135,8 @@ curl -s "${FUNCTION_URL}?prefix=my-test-" \
   "found_count": 3,
   "found_resources": [
     { "type": "alloydb.Cluster", "name": "projects/.../clusters/ansible-test-db" },
+    { "type": "storage.Bucket", "name": "ansible-test-bucket" },
+    { "type": "bigquery.Dataset", "name": "ansible_test_dataset" },
     { "type": "compute.Address", "name": "ansible-test-ip", "scope": "global" },
     { "type": "compute.Network", "name": "ansible-test-vpc" }
   ],
