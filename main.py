@@ -690,6 +690,7 @@ def handle_vertexai(
         list_method: str,
         delete_method: str,
         asset_type: str,
+        delete_kwargs: dict[str, any] | None = None,
     ) -> None:
         try:
             client = client_cls(client_options=opts)
@@ -703,7 +704,10 @@ def handle_vertexai(
 
                         def _delete(name=name) -> None:
                             try:
-                                getattr(client, delete_method)(name=name).result()
+                                kwargs = {"name": name}
+                                if delete_kwargs:
+                                    kwargs.update(delete_kwargs)
+                                getattr(client, delete_method)(**kwargs).result()
                                 actions.append(
                                     f"Deleted Vertex AI {asset_type}: {name}"
                                 )
@@ -1023,24 +1027,27 @@ def handle_vertexai(
         "Tensorboard",
     )
 
-    # Featurestore & FeatureOnlineStore
+    # Featurestore, FeatureOnlineStore & FeatureGroup
     scan_and_delete(
         aiplatform_v1.FeaturestoreServiceClient,
         "list_featurestores",
         "delete_featurestore",
         "Featurestore",
+        delete_kwargs={"force": True},
     )
     scan_and_delete(
         aiplatform_v1.FeatureOnlineStoreAdminServiceClient,
         "list_feature_online_stores",
         "delete_feature_online_store",
         "FeatureOnlineStore",
+        delete_kwargs={"force": True},
     )
     scan_and_delete(
         aiplatform_v1.FeatureRegistryServiceClient,
         "list_feature_groups",
         "delete_feature_group",
         "FeatureGroup",
+        delete_kwargs={"force": True},
     )
 
     return {"found": found, "actions": actions}
@@ -1064,9 +1071,7 @@ def handle_storage(project: str, prefix: str, do_cleanup: bool) -> HandlerResult
                 def _delete_bucket(bucket_name: str = bucket.name) -> None:
                     try:
                         b = client.bucket(bucket_name)
-                        for blob in client.list_blobs(bucket_name, versions=True):
-                            blob.delete()
-                        b.delete()
+                        b.delete(force=True)
                         actions.append(f"Deleted Storage Bucket: {bucket_name}")
                     except Exception as e:
                         msg = f"Could not delete Storage Bucket {bucket_name}: {e}"

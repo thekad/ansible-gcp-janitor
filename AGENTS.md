@@ -155,6 +155,38 @@ The `do_cleanup` boolean is threaded through every handler. All deletion calls
 are gated on `if do_cleanup:`. In dry-run mode the function is fully safe to run
 against a production project — it only reads and lists.
 
+## Cascade delete behavior
+
+Several GCP resources support cascade deletion via `force=True` or similar
+parameters. The janitor leverages this to simplify cleanup, reduce API calls,
+and speed up execution. Child resources deleted by cascade are not listed
+individually in the `found` resources list — only their parent resource appears.
+
+| Resource | Delete Parameter | Child Resources Cascaded |
+|----------|------------------|--------------------------|
+| **BigQuery Dataset** | `delete_contents=True` | All tables, views, routines, BQML models |
+| **Storage Bucket** | `force=True` | All blobs/objects and their versions (max 256 objects) |
+| **Vertex AI Featurestore** | `force=True` | All EntityTypes and Features |
+| **Vertex AI FeatureOnlineStore** | `force=True` | All FeatureViews |
+| **Vertex AI FeatureGroup** | `force=True` | All Features |
+
+**Storage bucket limitation:** The `force=True` parameter only works for buckets
+containing ≤256 objects. Buckets exceeding this limit will fail with a
+`ValueError`. Ansible integration tests create buckets with a handful of items,
+well under this threshold.
+
+Resources **not** using cascade delete (explicit child deletion required):
+
+- **AlloyDB Cluster** → Instances, Users (deleted explicitly before cluster)
+- **Cloud Build v2 Connection** → Repositories (deleted explicitly before connection)
+- **Vertex AI MetadataStore** → Artifacts, Contexts, Executions (deleted explicitly before store)
+- **Vertex AI IndexEndpoint** → deployed indexes must be undeployed before endpoint deletion
+- **Vertex AI Endpoint** → deployed models must be undeployed before endpoint deletion
+
+These resources require explicit child deletion because their APIs do not provide
+a `force` or cascade parameter, or because the undeployment step involves additional
+state transitions beyond simple deletion.
+
 ## Error handling conventions
 
 - Each domain scanner is wrapped in a `try/except` at the top level in
