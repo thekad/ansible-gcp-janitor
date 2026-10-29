@@ -128,6 +128,11 @@ deleted, otherwise the API returns an error.
    VPC dependency.
 3. Use lazy imports inside the handler (`from google.cloud import ...`) — do not
    add top-level imports.
+   - **Why**: Cloud Function instances may not need all GCP SDKs loaded. Lazy imports
+     keep baseline memory footprint low (~80–120MB) and defer loading only to handlers
+     that are actually invoked. This is especially important since the function runs
+     daily on a fixed schedule; every MB of memory reduction translates to lower GCP
+     Cloud Run costs across the year.
 4. Add the corresponding package to `requirements.txt` pinned to a major version
    (`==N.*`).
 5. If the new domain uses a VPC or PSA peering, it **must** appear before
@@ -137,6 +142,11 @@ deleted, otherwise the API returns an error.
    `client_cls: type` and include an explicit `-> None` if the function has no
    return value. Never use bare `dict` or `list` as a return type where a more
    precise type is available.
+   - **Why**: Type hints enable static analysis tools (mypy, pylint) to catch API
+     misuse before deployment. They also improve code readability and enable better
+     IDE autocomplete. Since this function has strict ordering constraints and
+     complex interdependencies, explicit types prevent silent failures (e.g.,
+     forgetting to pass `do_cleanup` parameter, returning wrong dict structure).
 
 ## Configuration reference
 
