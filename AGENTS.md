@@ -220,6 +220,7 @@ individually in the `found` resources list — only their parent resource appear
 |----------|------------------|--------------------------|
 | **BigQuery Dataset** | `delete_contents=True` | All tables, views, routines, BQML models |
 | **Storage Bucket** | `force=True` | All blobs/objects and their versions (max 256 objects) |
+| **AlloyDB Cluster** | `force=True` | Users (instances are deleted concurrently first to stay within the timeout) |
 | **Vertex AI Featurestore** | `force=True` | All EntityTypes and Features |
 | **Vertex AI FeatureOnlineStore** | `force=True` | All FeatureViews |
 | **Vertex AI FeatureGroup** | `force=True` | All Features |
@@ -231,7 +232,6 @@ well under this threshold.
 
 Resources **not** using cascade delete (explicit child deletion required):
 
-- **AlloyDB Cluster** → Instances, Users (deleted explicitly before cluster)
 - **Cloud Build v2 Connection** → Repositories (deleted explicitly before connection)
 - **Vertex AI MetadataStore** → Artifacts, Contexts, Executions (deleted explicitly before store)
 - **Vertex AI IndexEndpoint** → deployed indexes must be undeployed before endpoint deletion
