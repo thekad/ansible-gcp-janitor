@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix
 
 
 def handle_cloudbuildv2(
@@ -16,7 +16,7 @@ def handle_cloudbuildv2(
     found, actions = [], []
 
     try:
-        repo_tasks: list[Callable[[], None]] = []
+        repo_tasks: list[T.Callable[[], None]] = []
         matched_connections = []
         for conn in client.list_connections(parent=parent):
             conn_matched = match_prefix(conn.name, prefix)
@@ -43,7 +43,7 @@ def handle_cloudbuildv2(
         # Repositories must be deleted before their parent connection.
         _run_concurrent(repo_tasks)
 
-        connection_tasks: list[Callable[[], None]] = []
+        connection_tasks: list[T.Callable[[], None]] = []
         for conn in matched_connections:
 
             def _delete_connection(conn=conn) -> None:

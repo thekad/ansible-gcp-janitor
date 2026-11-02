@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix
 
 
 def handle_alloydb(
@@ -17,7 +17,7 @@ def handle_alloydb(
 
     # 1. Backups
     try:
-        backup_tasks: list[Callable[[], None]] = []
+        backup_tasks: list[T.Callable[[], None]] = []
         for backup in client.list_backups(parent=parent):
             if match_prefix(backup.name, prefix):
                 found.append({"type": "alloydb.Backup", "name": backup.name})
@@ -36,7 +36,7 @@ def handle_alloydb(
 
     # 2. Clusters, Instances & Users
     try:
-        sub_resource_tasks: list[Callable[[], None]] = []
+        sub_resource_tasks: list[T.Callable[[], None]] = []
         matched_clusters = []
         for cluster in client.list_clusters(parent=parent):
             cluster_matched = match_prefix(cluster.name, prefix) or match_prefix(
@@ -81,7 +81,7 @@ def handle_alloydb(
         # cluster; clusters themselves are independent of each other.
         _run_concurrent(sub_resource_tasks)
 
-        cluster_tasks: list[Callable[[], None]] = []
+        cluster_tasks: list[T.Callable[[], None]] = []
         for cluster in matched_clusters:
 
             def _delete_cluster(cluster=cluster) -> None:

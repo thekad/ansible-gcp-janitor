@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import concurrent.futures
-from typing import Callable, TypedDict
+import typing as T
 
 from janitor.config import MAX_DELETE_WORKERS
 
 
-class HandlerResult(TypedDict):
+class HandlerResult(T.TypedDict):
     found: list[dict[str, str]]
     actions: list[str]
 
@@ -31,7 +31,7 @@ def underscore_prefix(prefix: str) -> str:
     return prefix.replace("-", "_")
 
 
-def _run_concurrent(tasks: list[Callable[[], None]]) -> None:
+def _run_concurrent(tasks: list[T.Callable[[], None]]) -> None:
     """Runs zero-argument callables concurrently, bounded by
     MAX_DELETE_WORKERS, blocking until all have completed.
 

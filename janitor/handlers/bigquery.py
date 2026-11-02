@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, underscore_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix, underscore_prefix
 
 
 def handle_bigquery(project: str, prefix: str, do_cleanup: bool) -> HandlerResult:
@@ -21,7 +21,7 @@ def handle_bigquery(project: str, prefix: str, do_cleanup: bool) -> HandlerResul
         return match_prefix(name, prefix) or match_prefix(name, bq_prefix)
 
     try:
-        dataset_tasks: list[Callable[[], None]] = []
+        dataset_tasks: list[T.Callable[[], None]] = []
         for dataset in client.list_datasets():
             if not bq_match(dataset.dataset_id):
                 continue

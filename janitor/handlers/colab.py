@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix
 
 
 def handle_colab(
@@ -16,7 +16,7 @@ def handle_colab(
 
     # 1. Schedules
     sched_client = aiplatform_v1.ScheduleServiceClient(client_options=opts)
-    schedule_tasks: list[Callable[[], None]] = []
+    schedule_tasks: list[T.Callable[[], None]] = []
     for sched in sched_client.list_schedules(parent=parent):
         if match_prefix(sched.name, prefix) or match_prefix(sched.display_name, prefix):
             found.append({"type": "colab.Schedule", "name": sched.name})
@@ -32,7 +32,7 @@ def handle_colab(
     # 2. Notebook Runtimes, Execution Jobs, Runtime Templates
     nb_client = aiplatform_v1.NotebookServiceClient(client_options=opts)
 
-    job_tasks: list[Callable[[], None]] = []
+    job_tasks: list[T.Callable[[], None]] = []
     for job in nb_client.list_notebook_execution_jobs(parent=parent):
         if match_prefix(job.name, prefix) or match_prefix(job.display_name, prefix):
             found.append({"type": "colab.NotebookExecution", "name": job.name})
@@ -45,7 +45,7 @@ def handle_colab(
                 job_tasks.append(_delete_job)
     _run_concurrent(job_tasks)
 
-    runtime_tasks: list[Callable[[], None]] = []
+    runtime_tasks: list[T.Callable[[], None]] = []
     for runtime in nb_client.list_notebook_runtimes(parent=parent):
         if match_prefix(runtime.name, prefix) or match_prefix(
             runtime.display_name, prefix
@@ -60,7 +60,7 @@ def handle_colab(
                 runtime_tasks.append(_delete_runtime)
     _run_concurrent(runtime_tasks)
 
-    template_tasks: list[Callable[[], None]] = []
+    template_tasks: list[T.Callable[[], None]] = []
     for tmpl in nb_client.list_notebook_runtime_templates(parent=parent):
         if match_prefix(tmpl.name, prefix) or match_prefix(tmpl.display_name, prefix):
             found.append({"type": "colab.RuntimeTemplate", "name": tmpl.name})

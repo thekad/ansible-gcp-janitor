@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix
 
 
 def handle_cloudbuild(project: str, prefix: str, do_cleanup: bool) -> HandlerResult:
@@ -13,7 +13,7 @@ def handle_cloudbuild(project: str, prefix: str, do_cleanup: bool) -> HandlerRes
     found, actions = [], []
 
     try:
-        trigger_tasks: list[Callable[[], None]] = []
+        trigger_tasks: list[T.Callable[[], None]] = []
         for trigger in client.list_build_triggers(project_id=project):
             if match_prefix(trigger.name, prefix):
                 found.append(

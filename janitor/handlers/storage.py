@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix
 
 
 def handle_storage(project: str, prefix: str, do_cleanup: bool) -> HandlerResult:
@@ -14,7 +14,7 @@ def handle_storage(project: str, prefix: str, do_cleanup: bool) -> HandlerResult
     actions: list[str] = []
 
     try:
-        bucket_tasks: list[Callable[[], None]] = []
+        bucket_tasks: list[T.Callable[[], None]] = []
         for bucket in client.list_buckets():
             if not match_prefix(bucket.name, prefix):
                 continue

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, underscore_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix, underscore_prefix
 
 
 def handle_vertexai(
@@ -47,7 +47,7 @@ def handle_vertexai(
     ) -> None:
         try:
             client = client_cls(client_options=opts)
-            tasks: list[Callable[[], None]] = []
+            tasks: list[T.Callable[[], None]] = []
             for item in getattr(client, list_method)(parent=parent):
                 name = getattr(item, "name", "")
                 disp = getattr(item, "display_name", "")
@@ -85,7 +85,7 @@ def handle_vertexai(
     ) -> None:
         try:
             client = client_cls(client_options=opts)
-            tasks: list[Callable[[], None]] = []
+            tasks: list[T.Callable[[], None]] = []
             for item in getattr(client, list_method)(parent=parent):
                 name = getattr(item, "name", "")
                 disp = getattr(item, "display_name", "")
@@ -139,7 +139,7 @@ def handle_vertexai(
         if do_cleanup:
             # Phase 2: undeploy each matched model from all endpoints that hold it
             matched_model_ids = {m.name.split("/")[-1] for m in matched_models}
-            undeploy_tasks: list[Callable[[], None]] = []
+            undeploy_tasks: list[T.Callable[[], None]] = []
             for ep in ep_client.list_endpoints(parent=parent):
                 for dm in ep.deployed_models or []:
                     if dm.model.split("/")[-1] in matched_model_ids:
@@ -162,7 +162,7 @@ def handle_vertexai(
             _run_concurrent(undeploy_tasks)
 
             # Phase 3: delete matched models
-            model_tasks: list[Callable[[], None]] = []
+            model_tasks: list[T.Callable[[], None]] = []
             for m in matched_models:
 
                 def _delete_model(model_name=m.name) -> None:
@@ -185,7 +185,7 @@ def handle_vertexai(
     # Phase 4: scan & delete matched endpoints
     try:
         ep_client = aiplatform_v1.EndpointServiceClient(client_options=opts)
-        endpoint_tasks: list[Callable[[], None]] = []
+        endpoint_tasks: list[T.Callable[[], None]] = []
         for ep in ep_client.list_endpoints(parent=parent):
             if vertex_match(ep.name, ep.display_name):
                 found.append({"type": "vertexai.Endpoint", "name": ep.name})
@@ -264,7 +264,7 @@ def handle_vertexai(
     # and IndexEndpoints must be deleted before the backing Indexes.
     try:
         ie_client = aiplatform_v1.IndexEndpointServiceClient(client_options=opts)
-        index_endpoint_tasks: list[Callable[[], None]] = []
+        index_endpoint_tasks: list[T.Callable[[], None]] = []
         for ie in ie_client.list_index_endpoints(parent=parent):
             if vertex_match(ie.name, ie.display_name):
                 found.append({"type": "vertexai.IndexEndpoint", "name": ie.name})
@@ -309,7 +309,7 @@ def handle_vertexai(
                 continue
 
             # Delete all artifacts from this matching store
-            artifact_tasks: list[Callable[[], None]] = []
+            artifact_tasks: list[T.Callable[[], None]] = []
             for artifact in metadata_client.list_artifacts(parent=store.name):
                 found.append({"type": "vertexai.Artifact", "name": artifact.name})
                 if do_cleanup:
@@ -325,7 +325,7 @@ def handle_vertexai(
             _run_concurrent(artifact_tasks)
 
             # Delete all contexts from this matching store
-            context_tasks: list[Callable[[], None]] = []
+            context_tasks: list[T.Callable[[], None]] = []
             for context in metadata_client.list_contexts(parent=store.name):
                 found.append({"type": "vertexai.Context", "name": context.name})
                 if do_cleanup:
@@ -341,7 +341,7 @@ def handle_vertexai(
             _run_concurrent(context_tasks)
 
             # Delete all executions from this matching store
-            execution_tasks: list[Callable[[], None]] = []
+            execution_tasks: list[T.Callable[[], None]] = []
             for execution in metadata_client.list_executions(parent=store.name):
                 found.append({"type": "vertexai.Execution", "name": execution.name})
                 if do_cleanup:

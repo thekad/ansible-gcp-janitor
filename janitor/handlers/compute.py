@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+import typing as T
 
-from janitor.core import HandlerResult, match_prefix, _run_concurrent
+from janitor.core import HandlerResult, _run_concurrent, match_prefix
 
 
 def handle_compute(
@@ -20,7 +20,7 @@ def handle_compute(
 
     # 1. Instances
     inst_client = compute_v1.InstancesClient()
-    instance_tasks: list[Callable[[], None]] = []
+    instance_tasks: list[T.Callable[[], None]] = []
     for zone_str, response in inst_client.aggregated_list(project=project):
         if response.instances:
             zone = zone_str.split("/")[-1]
@@ -49,7 +49,7 @@ def handle_compute(
 
     # 2. Disks
     disk_client = compute_v1.DisksClient()
-    disk_tasks: list[Callable[[], None]] = []
+    disk_tasks: list[T.Callable[[], None]] = []
     for zone_str, response in disk_client.aggregated_list(project=project):
         if response.disks:
             zone = zone_str.split("/")[-1]
@@ -74,7 +74,7 @@ def handle_compute(
 
     # 3. Firewall Rules (must go before networks)
     fw_client = compute_v1.FirewallsClient()
-    firewall_tasks: list[Callable[[], None]] = []
+    firewall_tasks: list[T.Callable[[], None]] = []
     for fw in fw_client.list(project=project):
         if match_prefix(fw.name, prefix):
             found.append({"type": "compute.Firewall", "name": fw.name})
@@ -97,7 +97,7 @@ def handle_compute(
         for net in _net_pre.list(project=project)
         if net.auto_create_subnetworks
     }
-    subnet_tasks: list[Callable[[], None]] = []
+    subnet_tasks: list[T.Callable[[], None]] = []
     for zone_str, response in subnet_client.aggregated_list(project=project):
         if response.subnetworks:
             subnet_region = zone_str.split("/")[-1]
@@ -169,7 +169,7 @@ def handle_compute(
         service_networking = build(
             "servicenetworking", "v1", credentials=credentials, cache_discovery=False
         )
-        connection_tasks: list[Callable[[], None]] = []
+        connection_tasks: list[T.Callable[[], None]] = []
         for net_name in matched_networks:
             consumer_network = f"projects/{project_number}/global/networks/{net_name}"
             try:
@@ -254,7 +254,7 @@ def handle_compute(
     # client and delete call.
     global_addr_client = compute_v1.GlobalAddressesClient()
     addr_client = compute_v1.AddressesClient()
-    address_tasks: list[Callable[[], None]] = []
+    address_tasks: list[T.Callable[[], None]] = []
     for zone_str, response in addr_client.aggregated_list(project=project):
         if not response.addresses:
             continue
@@ -294,7 +294,7 @@ def handle_compute(
 
     # 7. Networks & VPC Peerings (Global; peerings removed before network deletion)
     net_client = compute_v1.NetworksClient()
-    network_tasks: list[Callable[[], None]] = []
+    network_tasks: list[T.Callable[[], None]] = []
     for net in net_client.list(project=project):
         if match_prefix(net.name, prefix):
             found.append({"type": "compute.Network", "name": net.name})
