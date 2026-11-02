@@ -11,16 +11,15 @@ attempting to delete parents before children or networks before their consumers.
 
 ## Local development environment
 
-A virtualenv lives at `.venv/` in the project root. Always use it for syntax
-checks, import validation, and any local execution.
+A virtual environment lives at `.venv/` in the project root, managed by `uv`.
+Always use it for syntax checks, import validation, and any local execution.
 
 ```bash
 # First-time setup (or after a fresh clone)
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+uv sync
 
-# After any change to requirements.txt
-.venv/bin/pip install -r requirements.txt
+# After any change to pyproject.toml
+uv sync
 
 # Syntax check and bytecode compilation for all modules
 .venv/bin/python -m compileall -q main.py janitor
@@ -35,10 +34,26 @@ print('imports OK, lazy loading preserved')
 ```
 
 The `.venv/` directory is listed in `.gitignore` and must never be committed.
-Always re-run `.venv/bin/pip install -r requirements.txt` after pulling changes if
-`requirements.txt` has been modified.
+The `uv.lock` file captures exact dependency versions for reproducible builds and
+**should be committed** to ensure consistent deployments across environments.
+Always re-run `uv sync` after pulling changes if `pyproject.toml` has been modified.
 
 ## File map
+
+| File | Purpose |
+|---|---|
+| `pyproject.toml` | Project metadata and dependencies (uv-managed). |
+| `uv.lock` | Pinned dependency versions for reproducible builds (committed to repo). |
+
+**Legacy files (no longer used):**
+
+| File | Status |
+|---|---|
+| `requirements.txt` | Deprecated; replaced by `pyproject.toml` and `uv.lock`. |
+
+---
+
+### Remaining files
 
 | File | Purpose |
 |---|---|
@@ -47,7 +62,6 @@ Always re-run `.venv/bin/pip install -r requirements.txt` after pulling changes 
 | `janitor/core.py` | Shared utilities: `HandlerResult` TypedDict, `match_prefix()`, `underscore_prefix()`, `_run_concurrent()`. |
 | `janitor/handlers/` | Package containing domain-specific handler modules. |
 | `janitor/handlers/*.py` | Individual handlers: `compute.py`, `alloydb.py`, `cloudbuild.py`, `cloudbuildv2.py`, `colab.py`, `vertexai.py`, `storage.py`, `bigquery.py`. |
-| `requirements.txt` | Python dependencies (pinned to major versions). |
 | `scripts/setup.sh` | One-time project setup: enables APIs, creates service account, grants IAM roles. |
 | `scripts/deploy.sh` | Deploys the Cloud Function and optionally creates the Cloud Scheduler job. |
 | `scripts/trigger.sh` | Manually invokes the deployed function using `gcloud auth print-identity-token`. |
@@ -265,3 +279,8 @@ DO_CLEANUP=true DO_CRON=true ./scripts/deploy.sh
 
 The scheduler job runs daily at 02:00 America/Los_Angeles (`0 2 * * *`).
 Function timeout is 540 seconds (9 minutes, the Cloud Run Gen2 maximum).
+
+**Note on dependencies:** Cloud Functions 2nd Gen automatically detects and uses `uv` for
+Python 3.11+ runtimes. The `uv.lock` file is committed to ensure reproducible, deterministic
+builds across all deployment environments. Never delete or manually edit `uv.lock`;
+update dependencies via `uv sync` after modifying `pyproject.toml`.

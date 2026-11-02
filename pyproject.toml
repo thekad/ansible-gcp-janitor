@@ -1,0 +1,27 @@
+[project]
+name = "ansible-gcp-janitor"
+version = "0.1.0"
+description = "HTTP-triggered GCP Cloud Function (2nd Gen) that finds and deletes leftover GCP resources from Ansible integration tests"
+requires-python = ">=3.11"
+authors = [
+    { name = "Ansible GCP Janitor Contributors" }
+]
+dependencies = [
+    "functions-framework==3.*",
+    "google-api-python-client==2.*",
+    "google-auth-httplib2==0.*",
+    "google-cloud-aiplatform==1.*",
+    "google-cloud-alloydb==0.*",
+    "google-cloud-bigquery==3.*",
+    "google-cloud-build==3.*",
+    "google-cloud-compute==1.*",
+    "google-cloud-resource-manager==1.*",
+    "google-cloud-storage==3.*",
+    "httplib2==0.*",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[tool.uv]
+managed = true
