@@ -22,15 +22,15 @@ python3 -m venv .venv
 # After any change to requirements.txt
 .venv/bin/pip install -r requirements.txt
 
-# Syntax check main.py
-.venv/bin/python -c "import ast; ast.parse(open('main.py').read()); print('syntax OK')"
+# Syntax check and bytecode compilation for all modules
+.venv/bin/python -m compileall -q main.py janitor
 
-# Verify all imports resolve
+# Verify all imports resolve (Google SDKs are lazy-loaded, only project module imports checked)
 .venv/bin/python -c "
-from google.cloud import compute_v1, alloydb_v1, aiplatform_v1, bigquery
-from google.cloud.devtools import cloudbuild_v1, cloudbuild_v2
-import functions_framework
-print('imports OK')
+import sys, main
+sdk = sorted(m for m in sys.modules if m.startswith(('google.cloud.compute', 'google.cloud.alloydb', 'google.cloud.aiplatform', 'google.cloud.bigquery', 'google.cloud.storage', 'google.cloud.devtools', 'google.cloud.resourcemanager', 'google.auth', 'google_auth_httplib2', 'googleapiclient', 'httplib2')))
+assert not sdk, sdk
+print('imports OK, lazy loading preserved')
 "
 ```
 
@@ -42,39 +42,61 @@ Always re-run `.venv/bin/pip install -r requirements.txt` after pulling changes 
 
 | File | Purpose |
 |---|---|
-| `main.py` | All function logic. One handler function per GCP domain. |
+| `main.py` | HTTP entrypoint; imports handlers and orchestrates cross-domain deletion order. |
+| `janitor/config.py` | Global constants: `DEFAULT_REGION`, `DEFAULT_PREFIX`, `MAX_DELETE_WORKERS`. |
+| `janitor/core.py` | Shared utilities: `HandlerResult` TypedDict, `match_prefix()`, `underscore_prefix()`, `_run_concurrent()`. |
+| `janitor/handlers/` | Package containing domain-specific handler modules. |
+| `janitor/handlers/*.py` | Individual handlers: `compute.py`, `alloydb.py`, `cloudbuild.py`, `cloudbuildv2.py`, `colab.py`, `vertexai.py`, `storage.py`, `bigquery.py`. |
 | `requirements.txt` | Python dependencies (pinned to major versions). |
 | `scripts/setup.sh` | One-time project setup: enables APIs, creates service account, grants IAM roles. |
 | `scripts/deploy.sh` | Deploys the Cloud Function and optionally creates the Cloud Scheduler job. |
 | `scripts/trigger.sh` | Manually invokes the deployed function using `gcloud auth print-identity-token`. |
 
-## `main.py` structure
+## Package structure
 
-```
-match_prefix(name: str, prefix: str) -> bool                                          # Strips resource path, checks prefix
-underscore_prefix(prefix: str) -> str                                                  # Converts dashes to underscores for BigQuery/Vertex AI
-handle_compute(project, region, prefix, do_cleanup) -> HandlerResult                  # Compute Engine resources
-handle_alloydb(project, region, prefix, do_cleanup) -> HandlerResult                  # AlloyDB clusters, instances, users, backups
-handle_cloudbuild(project, prefix, do_cleanup) -> HandlerResult                       # Cloud Build triggers
-handle_cloudbuildv2(project, region, prefix, do_cleanup) -> HandlerResult             # Cloud Build v2 connections and repositories
-handle_colab(project, region, prefix, do_cleanup) -> HandlerResult                   # Colab/Notebook schedules, runtimes, templates
-handle_vertexai(project, region, prefix, do_cleanup) -> HandlerResult                 # Vertex AI endpoints, indexes, datasets, etc.
-handle_storage(project, prefix, do_cleanup) -> HandlerResult                          # Cloud Storage buckets (global; force-empties before delete)
-handle_bigquery(project, prefix, do_cleanup) -> HandlerResult                          # BigQuery datasets (global; cascades tables/views/routines/models)
-scan_and_clean_resources(request: Request) -> tuple[str, int] | tuple[str, int, dict] # HTTP entrypoint — orchestrates all handlers
-```
-
-`HandlerResult` is a `TypedDict` defined at the top of `main.py`:
+### `janitor/config.py`
 ```python
-class HandlerResult(TypedDict):
+DEFAULT_REGION: str              # "us-central1"
+DEFAULT_PREFIX: str              # "ansible-test-"
+MAX_DELETE_WORKERS: int          # 8 (fixed; thread pool size for concurrent deletions)
+```
+
+### `janitor/core.py`
+```python
+class HandlerResult(TypedDict):  # Return type for all domain handlers
     found: list[dict[str, str]]
     actions: list[str]
+
+match_prefix(name: str, prefix: str) -> bool                           # Strips resource path, checks prefix
+underscore_prefix(prefix: str) -> str                                  # Converts dashes to underscores for BigQuery/Vertex AI
+_run_concurrent(...)                                                   # ThreadPoolExecutor wrapper for parallel deletions
 ```
+
+### `janitor/handlers/*.py` (per-domain modules)
+```python
+handle_compute(project, region, prefix, do_cleanup) -> HandlerResult       # janitor/handlers/compute.py
+handle_alloydb(project, region, prefix, do_cleanup) -> HandlerResult       # janitor/handlers/alloydb.py
+handle_cloudbuild(project, prefix, do_cleanup) -> HandlerResult            # janitor/handlers/cloudbuild.py
+handle_cloudbuildv2(project, region, prefix, do_cleanup) -> HandlerResult  # janitor/handlers/cloudbuildv2.py
+handle_colab(project, region, prefix, do_cleanup) -> HandlerResult         # janitor/handlers/colab.py
+handle_vertexai(project, region, prefix, do_cleanup) -> HandlerResult      # janitor/handlers/vertexai.py
+handle_storage(project, prefix, do_cleanup) -> HandlerResult               # janitor/handlers/storage.py
+handle_bigquery(project, prefix, do_cleanup) -> HandlerResult              # janitor/handlers/bigquery.py
+```
+
+### `main.py`
+```python
+scan_and_clean_resources(request: Request) -> tuple[str, int] | tuple[str, int, dict]
+```
+HTTP entrypoint. Imports all handlers and defines the `scanners` list (order-sensitive,
+dicts domain handler functions in dependency order).
 
 ## Deletion order (must be preserved)
 
-The `scanners` list in `scan_and_clean_resources` is **order-sensitive**. Do not
-reorder without understanding the dependency chain.
+The `scanners` list in `main.py`'s `scan_and_clean_resources` function is **order-sensitive**.
+Do not reorder without understanding the dependency chain. Cross-domain order is defined
+there; within-domain order is defined in each handler module (e.g., within `handle_compute`,
+instances are deleted before disks, etc.).
 
 ```
 alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → storage → bigquery → compute
@@ -117,22 +139,30 @@ deleted, otherwise the API returns an error.
 
 ## Adding a new resource type
 
-1. If it belongs to an existing domain handler, add it inside that function in
+1. If it belongs to an existing domain, add it inside that function in
    the correct position relative to its dependencies.
-2. If it is a new domain, add a new `handle_<domain>(...)` function following the
-   same typed signature and return type:
-   ```python
-   def handle_<domain>(project: str, region: str, prefix: str, do_cleanup: bool) -> HandlerResult:
-   ```
-   Then insert it into the `scanners` list **before `compute`** unless it has no
-   VPC dependency.
-3. Use lazy imports inside the handler (`from google.cloud import ...`) — do not
-   add top-level imports.
+2. If it is a new domain:
+   a. Create a new module `janitor/handlers/<domain>.py` with a handler function:
+      ```python
+      def handle_<domain>(project: str, region: str, prefix: str, do_cleanup: bool) -> HandlerResult:
+      ```
+   b. Import shared utilities from `janitor.core` (only what is needed):
+      ```python
+      from janitor.core import HandlerResult, match_prefix, ...
+      ```
+   c. Keep all Google Cloud SDK imports lazy (inside the handler function body).
+   d. Include complete type hints on all functions (see point 5 below).
+   e. In `main.py`, import the new handler and add it to the `scanners` list **before
+      `compute`** unless it has no VPC dependency.
+3. **Lazy imports rule**: Only Google/third-party SDKs are lazy-loaded (inside function
+   scope). Standard library imports (`logging`, `time`, `typing`, `concurrent.futures`,
+   etc.) are loaded eagerly at module top.
    - **Why**: Cloud Function instances may not need all GCP SDKs loaded. Lazy imports
      keep baseline memory footprint low (~80–120MB) and defer loading only to handlers
      that are actually invoked. This is especially important since the function runs
      daily on a fixed schedule; every MB of memory reduction translates to lower GCP
-     Cloud Run costs across the year.
+     Cloud Run costs across the year. Standard library imports are tiny (negligible
+     memory overhead) and are always needed, so they are loaded top-level.
 4. Add the corresponding package to `requirements.txt` pinned to a major version
    (`==N.*`).
 5. If the new domain uses a VPC or PSA peering, it **must** appear before

@@ -12,10 +12,10 @@ domain-scoped scanners in a fixed order. In **dry-run mode** (the default) it
 only lists what it finds. In **cleanup mode** it deletes everything it finds.
 
 Within each resource type, deletions run concurrently through a bounded thread
-pool (`MAX_DELETE_WORKERS = 8`), since each delete blocks on a GCP long-running
-operation. Deletions that have cross-dependencies (e.g. child resources before
-their parent) are still ordered: each concurrent batch is awaited in full before
-the dependent batch begins.
+pool (see `janitor/config.py` for `MAX_DELETE_WORKERS`), since each delete blocks
+on a GCP long-running operation. Deletions that have cross-dependencies (e.g. child
+resources before their parent) are still ordered: each concurrent batch is awaited
+in full before the dependent batch begins.
 
 ### Deletion order
 
@@ -46,6 +46,33 @@ clusters hold VPC peerings that would block network deletion):
 Storage and BigQuery have no VPC dependencies, so they can run anywhere before
 Compute. Compute runs last because other domains create Private Service Access
 peerings and other VPC attachments that block network deletion.
+
+## Project layout
+
+The function is organized as a modular Python package:
+
+```
+main.py                      # HTTP entrypoint; imports handlers and orchestrates deletion order
+janitor/
+  __init__.py               # Package marker (empty)
+  config.py                 # Global constants (DEFAULT_REGION, DEFAULT_PREFIX, MAX_DELETE_WORKERS)
+  core.py                   # Shared utilities (HandlerResult, match_prefix, underscore_prefix, _run_concurrent)
+  handlers/
+    __init__.py             # Package marker (empty)
+    compute.py              # Compute Engine resources
+    alloydb.py              # AlloyDB clusters, instances, users, backups
+    cloudbuild.py           # Cloud Build triggers
+    cloudbuildv2.py         # Cloud Build v2 connections and repositories
+    colab.py                # Colab/Vertex AI Notebooks
+    vertexai.py             # Vertex AI endpoints, indexes, datasets, metadata stores, etc.
+    storage.py              # Cloud Storage buckets
+    bigquery.py             # BigQuery datasets
+```
+
+Each handler module imports only the shared utilities it needs from `janitor/core.py`
+and defers all Google Cloud SDK imports to function scope (preserving lazy loading
+and baseline memory efficiency). The `scanners` list in `main.py` defines the
+order-sensitive deletion sequence across domains.
 
 ## Prerequisites
 
