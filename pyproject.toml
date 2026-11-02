@@ -1,6 +1,6 @@
 [project]
 name = "ansible-gcp-janitor"
-version = "0.1.0"
+version = "0.2.0"
 description = "HTTP-triggered GCP Cloud Function (2nd Gen) that finds and deletes leftover GCP resources from Ansible integration tests"
 requires-python = ">=3.11"
 authors = [
