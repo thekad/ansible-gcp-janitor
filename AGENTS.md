@@ -44,9 +44,9 @@ Always re-run `.venv/bin/pip install -r requirements.txt` after pulling changes 
 |---|---|
 | `main.py` | All function logic. One handler function per GCP domain. |
 | `requirements.txt` | Python dependencies (pinned to major versions). |
-| `setup.sh` | One-time project setup: enables APIs, creates service account, grants IAM roles. |
-| `deploy.sh` | Deploys the Cloud Function and optionally creates the Cloud Scheduler job. |
-| `trigger.sh` | Manually invokes the deployed function using `gcloud auth print-identity-token`. |
+| `scripts/setup.sh` | One-time project setup: enables APIs, creates service account, grants IAM roles. |
+| `scripts/deploy.sh` | Deploys the Cloud Function and optionally creates the Cloud Scheduler job. |
+| `scripts/trigger.sh` | Manually invokes the deployed function using `gcloud auth print-identity-token`. |
 
 ## `main.py` structure
 
@@ -152,7 +152,7 @@ deleted, otherwise the API returns an error.
 
 | Env var | Required | Default | Notes |
 |---|---|---|---|
-| `TARGET_GCP_PROJECT_ID` | Yes | — | Set at deploy time in `deploy.sh` |
+| `TARGET_GCP_PROJECT_ID` | Yes | — | Set at deploy time in `scripts/deploy.sh` |
 | `REGION` | No | `us-central1` | Also overridable via `?region=` query param |
 | `PREFIX` | No | `ansible-test-` | Also overridable via `?prefix=` query param |
 | `DO_CLEANUP` | No | `false` | Set to `true` to enable active deletion |
@@ -224,13 +224,13 @@ subnetworks and their deletion must complete before subnet deletion is attempted
 
 ```bash
 # First-time setup (once per project)
-./setup.sh
+./scripts/setup.sh
 
 # Deploy in dry-run mode
-./deploy.sh
+./scripts/deploy.sh
 
 # Deploy in cleanup mode + create scheduler job
-DO_CLEANUP=true DO_CRON=true ./deploy.sh
+DO_CLEANUP=true DO_CRON=true ./scripts/deploy.sh
 ```
 
 The scheduler job runs daily at 02:00 America/Los_Angeles (`0 2 * * *`).

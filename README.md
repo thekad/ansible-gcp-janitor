@@ -59,7 +59,7 @@ with the required IAM roles:
 
 ```bash
 gcloud config set project YOUR_PROJECT_ID
-./setup.sh
+./scripts/setup.sh
 ```
 
 IAM roles granted to the service account:
@@ -80,14 +80,14 @@ IAM roles granted to the service account:
 
 ```bash
 # Dry-run mode (default) — lists resources, deletes nothing
-./deploy.sh
+./scripts/deploy.sh
 
 # Cleanup mode — actively deletes matched resources
-DO_CLEANUP=true ./deploy.sh
+DO_CLEANUP=true ./scripts/deploy.sh
 
 # Also create/update the daily Cloud Scheduler job (runs at 02:00 America/Los_Angeles)
-DO_CRON=true ./deploy.sh
-DO_CRON=true DO_CLEANUP=true ./deploy.sh
+DO_CRON=true ./scripts/deploy.sh
+DO_CRON=true DO_CLEANUP=true ./scripts/deploy.sh
 ```
 
 The function is deployed as `ansible-janitor` in `us-central1` with a 9-minute
@@ -111,10 +111,10 @@ lower priority than env vars).
 
 ```bash
 # Dry-run using the deployed function
-./trigger.sh
+./scripts/trigger.sh
 
 # Override region or prefix at invocation time
-REGION=us-east1 ./trigger.sh
+REGION=us-east1 ./scripts/trigger.sh
 
 # Dry-run with a custom prefix, using curl directly
 FUNCTION_URL=$(gcloud functions describe ansible-janitor \
@@ -152,7 +152,7 @@ peering removal.
 You can check the latest cloudrun function logs with:
 
 ```bash
-./cloudrun-logs.sh [since]
+./scripts/cloudrun-logs.sh [since]
 ```
 
 Where `since` defaults to "1 day ago"
@@ -160,7 +160,7 @@ Where `since` defaults to "1 day ago"
 Or you can check the latest schedule logs with:
 
 ```bash
-./schedule-logs.sh [since]
+./scripts/schedule-logs.sh [since]
 ```
 
 ## Known gaps
