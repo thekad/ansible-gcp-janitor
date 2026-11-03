@@ -15,14 +15,44 @@ dependencies = [
     "google-cloud-bigquery==3.*",
     "google-cloud-build==3.*",
     "google-cloud-compute==1.*",
-    "google-cloud-pubsub==1.*",
+    "google-cloud-pubsub==2.*",
     "google-cloud-resource-manager==1.*",
     "google-cloud-storage==3.*",
     "httplib2==0.*",
 ]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+    "pytest==8.*",
+    "pytest-cov==5.*",
+    "pytest-mock==3.*",
+]
 
 [tool.uv]
 managed = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "unit: All Unit tests",
+    "handler: Handler Unit tests",
+]
+
+[tool.coverage.run]
+source = ["janitor", "main"]
+omit = ["*/__pycache__/*", "*.pyc"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

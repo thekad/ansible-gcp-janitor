@@ -21,22 +21,30 @@ uv sync
 # After any change to pyproject.toml
 uv sync
 
+# Install test dependencies (for running tests locally)
+uv sync --extra dev
+
 # Syntax check and bytecode compilation for all modules
-.venv/bin/python -m compileall -q main.py janitor
+uv run python -m compileall -q main.py janitor
 
 # Verify all imports resolve (Google SDKs are lazy-loaded, only project module imports checked)
-.venv/bin/python -c "
+uv run python -c "
 import sys, main
 sdk = sorted(m for m in sys.modules if m.startswith(('google.cloud.compute', 'google.cloud.alloydb', 'google.cloud.aiplatform', 'google.cloud.bigquery', 'google.cloud.storage', 'google.cloud.devtools', 'google.cloud.pubsub', 'google.cloud.resourcemanager', 'google.auth', 'google_auth_httplib2', 'googleapiclient', 'httplib2')))
 assert not sdk, sdk
 print('imports OK, lazy loading preserved')
 "
+
+# Run the test suite
+uv run pytest tests/unit/ -v
 ```
 
 The `.venv/` directory is listed in `.gitignore` and must never be committed.
 The `uv.lock` file captures exact dependency versions for reproducible builds and
 **should be committed** to ensure consistent deployments across environments.
 Always re-run `uv sync` after pulling changes if `pyproject.toml` has been modified.
+After running `uv sync --extra dev`, test dependencies are available and you can run
+`uv run pytest` to verify all changes.
 
 ## File map
 
@@ -44,6 +52,8 @@ Always re-run `uv sync` after pulling changes if `pyproject.toml` has been modif
 |---|---|
 | `pyproject.toml` | Project metadata and dependencies (uv-managed). |
 | `uv.lock` | Pinned dependency versions for reproducible builds (committed to repo). |
+| `TESTING.md` | Comprehensive testing guide. |
+| `tests/` | Test suite (unit, handler-specific). |
 
 **Legacy files (no longer used):**
 
@@ -58,10 +68,10 @@ Always re-run `uv sync` after pulling changes if `pyproject.toml` has been modif
 | File | Purpose |
 |---|---|
 | `main.py` | HTTP entrypoint; imports handlers and orchestrates cross-domain deletion order. |
-| `janitor/config.py` | Global constants: `DEFAULT_REGION`, `DEFAULT_PREFIX`, `MAX_DELETE_WORKERS`. |
-| `janitor/core.py` | Shared utilities: `HandlerResult` TypedDict, `match_prefix()`, `underscore_prefix()`, `_run_concurrent()`. |
-| `janitor/handlers/` | Package containing domain-specific handler modules. |
-| `janitor/handlers/*.py` | Individual handlers: `compute.py`, `alloydb.py`, `cloudbuild.py`, `cloudbuildv2.py`, `colab.py`, `vertexai.py`, `pubsub.py`, `storage.py`, `bigquery.py`. |
+| `janitor/config.py` | Global constants: region, prefix, thread pool size. |
+| `janitor/core.py` | Shared utilities: utilities for matching, filtering, and concurrent operations. |
+| `janitor/handlers/` | Package containing domain-specific resource deletion handlers. |
+| `janitor/handlers/*.py` | Individual handlers: compute, alloydb, cloudbuild, cloudbuildv2, colab, vertexai, pubsub, storage, bigquery. |
 | `scripts/setup.sh` | One-time project setup: enables APIs, creates service account, grants IAM roles. |
 | `scripts/deploy.sh` | Deploys the Cloud Function and optionally creates the Cloud Scheduler job. |
 | `scripts/trigger.sh` | Manually invokes the deployed function using `gcloud auth print-identity-token`. |
@@ -328,6 +338,33 @@ subnetworks and their deletion must complete before subnet deletion is attempted
 Do not forget to add `container.googleapis.com` and `roles/container.admin` to
 `scripts/setup.sh`.
 
+## Testing
+
+The project includes a comprehensive test suite covering core utilities, HTTP handler logic,
+and resource deletion handlers. All tests use mocked GCP clients and run locally without
+requiring GCP authentication.
+
+**Install test dependencies:**
+```bash
+uv sync --extra dev
+```
+
+**Run all unit tests:**
+```bash
+uv run pytest tests/unit/ -v
+```
+
+**Run tests with coverage report:**
+```bash
+uv run pytest tests/ --cov=janitor --cov=main --cov-report=html
+```
+
+See `TESTING.md` for detailed testing documentation, including:
+- Test structure and organization
+- How to mock GCP clients and long-running operations
+- Adding new handler tests
+- Troubleshooting common mocking issues
+
 ## Deployment
 
 ```bash
@@ -347,4 +384,5 @@ Function timeout is 540 seconds (9 minutes, the Cloud Run Gen2 maximum).
 **Note on dependencies:** Cloud Functions 2nd Gen automatically detects and uses `uv` for
 Python 3.11+ runtimes. The `uv.lock` file is committed to ensure reproducible, deterministic
 builds across all deployment environments. Never delete or manually edit `uv.lock`;
-update dependencies via `uv sync` after modifying `pyproject.toml`.
+update dependencies via `uv sync` after modifying `pyproject.toml`. Test dependencies are
+installed via `uv sync --extra dev`.
