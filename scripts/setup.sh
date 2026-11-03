@@ -19,6 +19,7 @@ gcloud services enable \
     cloudresourcemanager.googleapis.com \
     cloudscheduler.googleapis.com \
     compute.googleapis.com \
+    pubsub.googleapis.com \
     run.googleapis.com \
     storage.googleapis.com
 
@@ -39,6 +40,7 @@ ROLES=(
     "roles/browser"                         # Resolve project ID -> project number (required by Service Networking API)
     "roles/cloudbuild.admin"                # Destroy cloudbuild triggers
     "roles/compute.admin"                   # Delete instances, disks, firewall rules, addresses, and networks
+    "roles/pubsub.admin"                    # Delete PubSub topics and subscriptions
     "roles/run.invoker"                     # janitor-bot acts as Scheduler's OIDC identity to invoke itself
     "roles/servicenetworking.networksAdmin" # Disconnect service networking connections
     "roles/storage.admin"                   # List/empty/delete Cloud Storage buckets and objects
@@ -54,4 +56,8 @@ for ROLE in "${ROLES[@]}"; do
     echo " -> Granted ${ROLE}"
 done
 
+echo ""
+echo "To deploy the Cloud Function, run:"
+echo "  ./scripts/deploy.sh"
+echo ""
 echo "Setup complete!"

@@ -194,6 +194,46 @@ deleted, otherwise the API returns an error.
      complex interdependencies, explicit types prevent silent failures (e.g.,
      forgetting to pass `do_cleanup` parameter, returning wrong dict structure).
 
+## Setup steps for new handlers
+
+When adding a new handler domain, you **must** update `scripts/setup.sh` to enable
+the required GCP API and assign the necessary IAM role to the service account.
+Failure to do so will result in "permission denied" or "API not enabled" errors
+at function runtime.
+
+**Steps:**
+
+1. Add the service API to the `gcloud services enable` call. API names follow the
+   pattern `<service>.googleapis.com`. For example, for PubSub: `pubsub.googleapis.com`.
+
+2. Add the appropriate IAM role to the `ROLES` array. Role names follow the pattern
+   `roles/<service>.<verb>`. For example, for PubSub: `roles/pubsub.admin`.
+
+   To find the correct role, search the
+   [GCP IAM Roles documentation](https://cloud.google.com/iam/docs/understanding-custom-roles#predefined_roles)
+   or use `gcloud iam roles list --filter='<service>'`.
+
+3. Add a brief comment explaining what the role enables (following the existing pattern).
+
+4. Run `./scripts/setup.sh` to apply changes to an existing project.
+
+5. Update this AGENTS.md file with the API and role added.
+
+**Example:** When adding the PubSub handler:
+
+```bash
+# In scripts/setup.sh, add to gcloud services enable:
+pubsub.googleapis.com
+
+# In scripts/setup.sh, add to ROLES array:
+"roles/pubsub.admin"                    # Delete PubSub topics and subscriptions
+```
+
+Then run:
+```bash
+./scripts/setup.sh
+```
+
 ## Configuration reference
 
 | Env var | Required | Default | Notes |
@@ -254,6 +294,27 @@ state transitions beyond simple deletion.
 - All GCP delete calls use `.result()` to block until the long-running operation
   completes before proceeding to the next resource.
 
+## APIs and IAM roles enabled by setup.sh
+
+| API | Role | Handler(s) |
+|---|---|---|
+| `aiplatform.googleapis.com` | `roles/aiplatform.admin` | vertexai, colab |
+| `alloydb.googleapis.com` | `roles/alloydb.admin` | alloydb |
+| `bigquery.googleapis.com` | `roles/bigquery.admin` | bigquery |
+| `cloudasset.googleapis.com` | — | (used by underlying APIs) |
+| `cloudbuild.googleapis.com` | `roles/cloudbuild.admin` | cloudbuild |
+| `cloudfunctions.googleapis.com` | — | (Cloud Function itself) |
+| `cloudresourcemanager.googleapis.com` | — | (used by underlying APIs) |
+| `cloudscheduler.googleapis.com` | — | (Cloud Scheduler for recurring invocation) |
+| `compute.googleapis.com` | `roles/compute.admin` | compute |
+| `pubsub.googleapis.com` | `roles/pubsub.admin` | pubsub |
+| `run.googleapis.com` | `roles/run.invoker` | (Cloud Run function execution) |
+| `storage.googleapis.com` | `roles/storage.admin` | storage |
+
+Supporting roles:
+- `roles/browser` — resolve project ID → project number (Service Networking API)
+- `roles/servicenetworking.networksAdmin` — disconnect VPC peerings (compute handler)
+
 ## Known gaps (not yet implemented)
 
 - GKE clusters — node pools hold subnetworks; must be deleted before subnets
@@ -264,6 +325,8 @@ state transitions beyond simple deletion.
 If adding GKE support: GKE clusters must be added to a new `handle_gke` handler
 and inserted into the scanners list **before `compute`**, since node pools consume
 subnetworks and their deletion must complete before subnet deletion is attempted.
+Do not forget to add `container.googleapis.com` and `roles/container.admin` to
+`scripts/setup.sh`.
 
 ## Deployment
 
