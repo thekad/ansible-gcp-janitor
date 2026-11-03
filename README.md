@@ -39,13 +39,14 @@ clusters hold VPC peerings that would block network deletion):
    ≤256 objects)
 7. **BigQuery** — Datasets (cascades tables, views, routines, BQML models via
    `delete_contents=True`)
-8. **Compute** — Instances → Disks → Firewall Rules → Subnetworks → Service
+8. **Pub/Sub** — Subscriptions → Topics
+9. **Compute** — Instances → Disks → Firewall Rules → Subnetworks → Service
    Networking Connections → Addresses (regional + global) → Networks (VPC
    Peerings removed inline before each network)
 
-Storage and BigQuery have no VPC dependencies, so they can run anywhere before
-Compute. Compute runs last because other domains create Private Service Access
-peerings and other VPC attachments that block network deletion.
+Storage, BigQuery, and Pub/Sub have no VPC dependencies and can run anywhere
+before Compute. Compute runs last because other domains create Private Service
+Access peerings and other VPC attachments that block network deletion.
 
 ## Project layout
 
@@ -74,6 +75,9 @@ and defers all Google Cloud SDK imports to function scope (preserving lazy loadi
 and baseline memory efficiency). The `scanners` list in `main.py` defines the
 order-sensitive deletion sequence across domains.
 
+For detailed documentation on handler architecture, deletion order rationale, and
+adding new resource types, see the [AGENTS.md](AGENTS.md) file.
+
 ## Prerequisites
 
 - `gcloud` CLI authenticated and pointed at your target project
@@ -89,19 +93,8 @@ gcloud config set project YOUR_PROJECT_ID
 ./scripts/setup.sh
 ```
 
-IAM roles granted to the service account:
-
-| Role | Purpose |
-|---|---|
-| `roles/aiplatform.admin` | Delete Vertex AI and Colab resources |
-| `roles/alloydb.admin` | Delete AlloyDB clusters and instances |
-| `roles/bigquery.admin` | Delete BigQuery datasets, tables, models, and routines |
-| `roles/browser` | Resolve project ID to project number (required by Service Networking API) |
-| `roles/cloudbuild.admin` | Destroy Cloud Build triggers |
-| `roles/compute.admin` | Delete instances, disks, firewall rules, addresses, and networks |
-| `roles/run.invoker` | Allow Cloud Scheduler to invoke the function |
-| `roles/servicenetworking.networksAdmin` | Remove PSA/service networking peerings |
-| `roles/storage.admin` | List, empty, and delete Cloud Storage buckets and objects |
+See `scripts/setup.sh` for the authoritative list of enabled APIs and IAM roles
+assigned to the service account.
 
 ## Deployment
 
@@ -197,5 +190,4 @@ The following resource types are not yet handled and may need manual cleanup:
 - GKE clusters (and node pools, which hold subnetworks)
 - Cloud SQL instances
 - Filestore instances
-- Pub/Sub topics and subscriptions
 - Secret Manager secrets
