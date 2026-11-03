@@ -27,7 +27,7 @@ uv sync
 # Verify all imports resolve (Google SDKs are lazy-loaded, only project module imports checked)
 .venv/bin/python -c "
 import sys, main
-sdk = sorted(m for m in sys.modules if m.startswith(('google.cloud.compute', 'google.cloud.alloydb', 'google.cloud.aiplatform', 'google.cloud.bigquery', 'google.cloud.storage', 'google.cloud.devtools', 'google.cloud.resourcemanager', 'google.auth', 'google_auth_httplib2', 'googleapiclient', 'httplib2')))
+sdk = sorted(m for m in sys.modules if m.startswith(('google.cloud.compute', 'google.cloud.alloydb', 'google.cloud.aiplatform', 'google.cloud.bigquery', 'google.cloud.storage', 'google.cloud.devtools', 'google.cloud.pubsub', 'google.cloud.resourcemanager', 'google.auth', 'google_auth_httplib2', 'googleapiclient', 'httplib2')))
 assert not sdk, sdk
 print('imports OK, lazy loading preserved')
 "
@@ -61,7 +61,7 @@ Always re-run `uv sync` after pulling changes if `pyproject.toml` has been modif
 | `janitor/config.py` | Global constants: `DEFAULT_REGION`, `DEFAULT_PREFIX`, `MAX_DELETE_WORKERS`. |
 | `janitor/core.py` | Shared utilities: `HandlerResult` TypedDict, `match_prefix()`, `underscore_prefix()`, `_run_concurrent()`. |
 | `janitor/handlers/` | Package containing domain-specific handler modules. |
-| `janitor/handlers/*.py` | Individual handlers: `compute.py`, `alloydb.py`, `cloudbuild.py`, `cloudbuildv2.py`, `colab.py`, `vertexai.py`, `storage.py`, `bigquery.py`. |
+| `janitor/handlers/*.py` | Individual handlers: `compute.py`, `alloydb.py`, `cloudbuild.py`, `cloudbuildv2.py`, `colab.py`, `vertexai.py`, `pubsub.py`, `storage.py`, `bigquery.py`. |
 | `scripts/setup.sh` | One-time project setup: enables APIs, creates service account, grants IAM roles. |
 | `scripts/deploy.sh` | Deploys the Cloud Function and optionally creates the Cloud Scheduler job. |
 | `scripts/trigger.sh` | Manually invokes the deployed function using `gcloud auth print-identity-token`. |
@@ -96,6 +96,7 @@ handle_colab(project, region, prefix, do_cleanup) -> HandlerResult         # jan
 handle_vertexai(project, region, prefix, do_cleanup) -> HandlerResult      # janitor/handlers/vertexai.py
 handle_storage(project, prefix, do_cleanup) -> HandlerResult               # janitor/handlers/storage.py
 handle_bigquery(project, prefix, do_cleanup) -> HandlerResult              # janitor/handlers/bigquery.py
+handle_pubsub(project, prefix, do_cleanup) -> HandlerResult                # janitor/handlers/pubsub.py
 ```
 
 ### `main.py`
@@ -113,7 +114,7 @@ there; within-domain order is defined in each handler module (e.g., within `hand
 instances are deleted before disks, etc.).
 
 ```
-alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → storage → bigquery → compute
+alloydb → cloudbuild → cloudbuildv2 → colab → vertexai → storage → bigquery → pubsub → compute
 ```
 
 **Why compute is last:** AlloyDB clusters create Private Service Access (PSA)
@@ -121,10 +122,11 @@ peerings on VPC networks. If compute runs first and tries to delete a network
 while a PSA peering is still active, the GCP API will return a 400. All VPC
 consumers must be deleted before `handle_compute` runs.
 
-**BigQuery has no VPC dependencies** and can sit anywhere before `compute`. It
-uses synchronous delete calls (no long-running operations), and
-`delete_dataset(..., delete_contents=True)` cascades to all contained tables,
-views, routines, and BQML models in one call.
+**Storage and BigQuery before PubSub:** PubSub topics may be configured to
+publish messages to Cloud Storage buckets or BigQuery datasets. These
+destinations must be deleted first to avoid orphaned topic subscriptions or
+failed message delivery attempts. Within PubSub, subscriptions are deleted
+before their parent topics to avoid API errors.
 
 **Within `handle_compute`, order is also fixed:**
 
@@ -257,7 +259,6 @@ state transitions beyond simple deletion.
 - GKE clusters — node pools hold subnetworks; must be deleted before subnets
 - Cloud SQL instances
 - Filestore instances
-- Pub/Sub topics and subscriptions
 - Secret Manager secrets
 
 If adding GKE support: GKE clusters must be added to a new `handle_gke` handler

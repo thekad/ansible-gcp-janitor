@@ -15,6 +15,7 @@ dependencies = [
     "google-cloud-bigquery==3.*",
     "google-cloud-build==3.*",
     "google-cloud-compute==1.*",
+    "google-cloud-pubsub==1.*",
     "google-cloud-resource-manager==1.*",
     "google-cloud-storage==3.*",
     "httplib2==0.*",
